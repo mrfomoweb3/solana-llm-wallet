@@ -951,7 +951,20 @@ export function createTelegramBot(token: string): Telegraf {
             });
 
             // 2. Ask LLM to interpret
-            const cmd = await session.llm.interpret(text, walletState, priceData);
+            let cmd;
+            try {
+                cmd = await session.llm.interpret(text, walletState, priceData);
+            } catch (err: any) {
+                // If it's a rate limit error, notify the user gracefully
+                if (err.message && err.message.includes('rate limit')) {
+                    await ctx.reply(`⏳ *Rate Limit Hit*\n\nYou're sending instructions faster than the AI can process them! Please wait a full 60 seconds and try your request again.`, { parse_mode: 'Markdown' });
+                    return;
+                }
+
+                // Generic fallback for other LLM errors
+                await ctx.reply(`❌ *AI Error*\n\nSorry, I couldn't process your request right now. ${err.message}`, { parse_mode: 'Markdown' });
+                return;
+            }
 
             // 3. Handle non-transactional actions — reply directly to user's message
             if (cmd.action === 'hold' || cmd.action === 'check_balance') {

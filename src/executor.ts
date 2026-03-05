@@ -132,33 +132,45 @@ export class TransactionExecutor {
       // ── Step 1: Get Jupiter Quote ────────────────────────────────────
       logger.info('Fetching Jupiter quote...');
       const jupApiKey = process.env.JUPITER_API_KEY ?? '';
-      const quoteRes = await axios.get(this.networkConfig.jupiterQuoteUrl, {
-        params: {
-          inputMint,
-          outputMint,
-          amount: amountLamports,
-          slippageBps,
-        },
-        headers: { 'x-api-key': jupApiKey },
-        timeout: 10_000,
-      });
 
-      const quote = quoteRes.data;
+      let quote;
+      try {
+        const quoteRes = await axios.get(this.networkConfig.jupiterQuoteUrl, {
+          params: {
+            inputMint,
+            outputMint,
+            amount: amountLamports,
+            slippageBps,
+          },
+          headers: { 'x-api-key': jupApiKey },
+          timeout: 10_000,
+        });
+        quote = quoteRes.data;
+      } catch (err: any) {
+        logger.error(`Jupiter Quote API failed: ${err.message}`, { response: err.response?.data });
+        return { success: false, error: `Quote API failed: ${err.response?.data?.error || err.message}` };
+      }
+
       logger.info(`Quote received: ${amountSOL} ${inputToken} → ~${(Number(quote.outAmount) / 1_000_000).toFixed(2)} ${outputToken}`);
 
       // ── Step 2: Get Swap Transaction ─────────────────────────────────
-      const swapRes = await axios.post(this.networkConfig.jupiterSwapUrl, {
-        quoteResponse: quote,
-        userPublicKey: this.wallet.publicKey.toString(),
-        wrapAndUnwrapSol: true,
-        dynamicComputeUnitLimit: true,
-        prioritizationFeeLamports: 'auto',
-      }, {
-        timeout: 10_000,
-        headers: { 'x-api-key': jupApiKey },
-      });
-
-      const { swapTransaction } = swapRes.data;
+      let swapTransaction;
+      try {
+        const swapRes = await axios.post(this.networkConfig.jupiterSwapUrl, {
+          quoteResponse: quote,
+          userPublicKey: this.wallet.publicKey.toString(),
+          wrapAndUnwrapSol: true,
+          dynamicComputeUnitLimit: true,
+          prioritizationFeeLamports: 'auto',
+        }, {
+          timeout: 10_000,
+          headers: { 'x-api-key': jupApiKey },
+        });
+        swapTransaction = swapRes.data.swapTransaction;
+      } catch (err: any) {
+        logger.error(`Jupiter Swap API failed: ${err.message}`, { response: err.response?.data });
+        return { success: false, error: `Swap API failed: ${err.response?.data?.error || err.message}` };
+      }
 
       // Deserialize the versioned transaction
       const txBuffer = Buffer.from(swapTransaction, 'base64');
