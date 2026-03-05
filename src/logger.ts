@@ -41,15 +41,15 @@ export type AuditEventType =
   | 'AGENT_STOP';
 
 export interface AuditEntry {
-  id:        string;
+  id: string;
   timestamp: string;
-  event:     AuditEventType;
-  data:      Record<string, unknown>;
+  event: AuditEventType;
+  data: Record<string, unknown>;
 }
 
 // ─── Logger ───────────────────────────────────────────────────────────────────
 
-const LOG_PATH = path.resolve(process.cwd(), 'audit.log.jsonl');
+const LOG_PATH = path.resolve(process.cwd(), 'keystores', 'audit.log.jsonl');
 
 let entryCount = 0;
 
@@ -60,7 +60,7 @@ function generateId(): string {
 
 function writeAuditEntry(event: AuditEventType, data: Record<string, unknown>): AuditEntry {
   const entry: AuditEntry = {
-    id:        generateId(),
+    id: generateId(),
     timestamp: new Date().toISOString(),
     event,
     data,
@@ -73,22 +73,22 @@ function writeAuditEntry(event: AuditEventType, data: Record<string, unknown>): 
 // ─── Console Formatters ───────────────────────────────────────────────────────
 
 const EVENT_STYLES: Record<AuditEventType, (msg: string) => string> = {
-  AGENT_START:            (m) => chalk.bold.green(`🚀 ${m}`),
-  INSTRUCTION_RECEIVED:   (m) => chalk.bold.cyan(`📨 ${m}`),
-  WALLET_STATE_FETCHED:   (m) => chalk.blue(`💰 ${m}`),
-  LLM_REQUEST:            (m) => chalk.magenta(`🧠 ${m}`),
-  LLM_RESPONSE:           (m) => chalk.magenta(`🧠 ${m}`),
-  GUARDRAIL_PASS:         (m) => chalk.green(`✅ ${m}`),
-  GUARDRAIL_BLOCK:        (m) => chalk.bold.red(`🛑 ${m}`),
-  SIMULATION_PASS:        (m) => chalk.green(`🔬 ${m}`),
-  SIMULATION_FAIL:        (m) => chalk.bold.yellow(`⚠️  ${m}`),
-  TRANSACTION_SENT:       (m) => chalk.bold.yellow(`📤 ${m}`),
-  TRANSACTION_CONFIRMED:  (m) => chalk.bold.green(`✅ ${m}`),
-  TRANSACTION_FAILED:     (m) => chalk.bold.red(`❌ ${m}`),
-  AGENT_HOLD:             (m) => chalk.gray(`⏸  ${m}`),
-  PRICE_CONDITION_CHECK:  (m) => chalk.blue(`📊 ${m}`),
-  ERROR:                  (m) => chalk.bold.red(`💥 ${m}`),
-  AGENT_STOP:             (m) => chalk.gray(`🛑 ${m}`),
+  AGENT_START: (m) => chalk.bold.green(`🚀 ${m}`),
+  INSTRUCTION_RECEIVED: (m) => chalk.bold.cyan(`📨 ${m}`),
+  WALLET_STATE_FETCHED: (m) => chalk.blue(`💰 ${m}`),
+  LLM_REQUEST: (m) => chalk.magenta(`🧠 ${m}`),
+  LLM_RESPONSE: (m) => chalk.magenta(`🧠 ${m}`),
+  GUARDRAIL_PASS: (m) => chalk.green(`✅ ${m}`),
+  GUARDRAIL_BLOCK: (m) => chalk.bold.red(`🛑 ${m}`),
+  SIMULATION_PASS: (m) => chalk.green(`🔬 ${m}`),
+  SIMULATION_FAIL: (m) => chalk.bold.yellow(`⚠️  ${m}`),
+  TRANSACTION_SENT: (m) => chalk.bold.yellow(`📤 ${m}`),
+  TRANSACTION_CONFIRMED: (m) => chalk.bold.green(`✅ ${m}`),
+  TRANSACTION_FAILED: (m) => chalk.bold.red(`❌ ${m}`),
+  AGENT_HOLD: (m) => chalk.gray(`⏸  ${m}`),
+  PRICE_CONDITION_CHECK: (m) => chalk.blue(`📊 ${m}`),
+  ERROR: (m) => chalk.bold.red(`💥 ${m}`),
+  AGENT_STOP: (m) => chalk.gray(`🛑 ${m}`),
 };
 
 // ─── Public API ───────────────────────────────────────────────────────────────
