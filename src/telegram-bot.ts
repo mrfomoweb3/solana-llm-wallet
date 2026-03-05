@@ -15,6 +15,7 @@ import { getSOLPrice } from './price-feed';
 import { runGuardrails, recordExecution } from './guardrails';
 import { logger } from './logger';
 import { getExplorerUrl, getAddressExplorerUrl } from './network-config';
+import { generateReceipt, ReceiptData } from './receipt';
 
 // ── Telegram Markdown escape helper ──────────────────────────────────────────
 // Escapes special chars that break Telegram's Markdown parser
@@ -957,6 +958,38 @@ export function createTelegramBot(token: string): Telegraf {
                 parse_mode: 'Markdown',
                 reply_parameters: { message_id: ctx.message.message_id },
             });
+
+            // 8. Send receipt image for successful transactions
+            if (result.success && result.signature) {
+                try {
+                    const receiptData: ReceiptData = {
+                        type: cmd.action as ReceiptData['type'],
+                        fromToken: cmd.params.inputToken ?? 'SOL',
+                        toToken: cmd.params.outputToken ?? 'USDC',
+                        amount: cmd.params.amountSOL ?? guardrailResult.resolvedAmountSOL ?? 0,
+                        amountUSD: (cmd.params.amountSOL ?? guardrailResult.resolvedAmountSOL ?? 0) * priceData.solPriceUSD,
+                        signature: result.signature,
+                        network: session.network,
+                        walletAddress: walletState.publicKey,
+                        explorerUrl: getExplorerUrl(result.signature, session.network),
+                        recipient: cmd.params.recipient ?? undefined,
+                        numOrders: (cmd.params as any).numOrders ?? undefined,
+                        intervalDays: (cmd.params as any).intervalDays ?? undefined,
+                        mintAddress: (cmd.params as any).mintAddress ?? undefined,
+                    };
+
+                    const receiptBuffer = await generateReceipt(receiptData);
+                    await ctx.replyWithPhoto(
+                        { source: receiptBuffer, filename: 'receipt.png' },
+                        {
+                            caption: '🧾 Transaction Receipt',
+                            reply_parameters: { message_id: ctx.message.message_id },
+                        }
+                    );
+                } catch (receiptErr) {
+                    logger.error(`Failed to generate receipt: ${receiptErr}`);
+                }
+            }
 
         } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
