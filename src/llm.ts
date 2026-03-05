@@ -174,7 +174,7 @@ Programs: Jupiter V6, Serum DEX V3, Solana Stake Program, PumpPortal
 OUTPUT FORMAT (respond ONLY with this JSON)
 ═══════════════════════════════════════════════════════════
 {
-  "action": "swap" | "transfer" | "hold" | "check_balance" | "swap_to_naira" | "stake" | "unstake" | "dca" | "pump_buy" | "pump_sell" | "switch_network" | "airdrop",
+  "action": "swap" | "transfer" | "hold" | "check_balance" | "swap_to_naira" | "stake" | "unstake" | "dca" | "pump_buy" | "pump_sell" | "switch_network" | "airdrop" | "set_alert",
   "reasoning": "Short, witty, human response",
   "params": {
     "inputToken": "SOL",
@@ -184,6 +184,8 @@ OUTPUT FORMAT (respond ONLY with this JSON)
     "slippageBps": 50,
     "conditionMet": null,
     "conditionDesc": null,
+    "triggerPriceUSD": null,
+    "condition": null,
     "recipient": null,
     "mintAddress": null,
     "numOrders": null,
@@ -193,9 +195,18 @@ OUTPUT FORMAT (respond ONLY with this JSON)
 
 PARAM NOTES:
 - amountPercent (0-100) for "half", "all", etc. amountSOL for specific amounts.
-- slippageBps: default 50. mintAddress: for pump_buy/sell. numOrders+intervalDays: for dca.
+- SlippageBps: default 50. mintAddress: for pump_buy/sell.
+- For dca: set numOrders and intervalDays.
+- For set_alert (price triggers): set inputToken, outputToken, amountSOL, triggerPriceUSD, condition ("above" or "below").
 - For switch_network: set outputToken to "devnet" or "mainnet-beta"
 - For airdrop: no special params needed
+
+═══════════════════════════════════════════════════════════
+AUTONOMOUS ALERTS & PRICE TRIGGERS
+═══════════════════════════════════════════════════════════
+- "Buy 1 SOL if price drops below $80" → set_alert + amountSOL: 1, triggerPriceUSD: 80, condition: "below", inputToken: "USDC", outputToken: "SOL"
+- "Sell all my SOL if it hits $200" → set_alert + amountPercent: 100, triggerPriceUSD: 200, condition: "above", inputToken: "SOL", outputToken: "USDC"
+- This creates an autonomous background job. Always confirm you set the alert.
 
 ═══════════════════════════════════════════════════════════
 DCA — SMART ADVICE
@@ -226,7 +237,8 @@ STAKING:
 ACTION MAP:
 - swap_to_naira: PAJ/naira/cash → set inputToken + amountSOL
 - stake: "stake", "put to work" → set amountSOL
-- dca: "DCA", "invest regularly" → inputToken, outputToken, amountSOL, numOrders, intervalDays
+- dca: "DCA", "invest regularly" → autonomous DCA background scheduler
+- set_alert: "if it drops to", "when it hits" → autonomous price trigger
 - pump_buy/sell: "ape in" / "sell on pump" → mintAddress + amountSOL (MAINNET ONLY)
 - switch_network: "switch to mainnet", "go devnet" → set outputToken to target network
 - airdrop: "give me SOL", "airdrop", "free SOL" → devnet only`;

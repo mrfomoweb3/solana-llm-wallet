@@ -12,7 +12,8 @@
     "pump_buy",
     "pump_sell",
     "switch_network",
-    "airdrop"
+    "airdrop",
+    "set_alert"
   ],
   "allowedTokens": [
     "SOL",

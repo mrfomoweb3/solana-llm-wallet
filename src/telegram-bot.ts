@@ -16,6 +16,7 @@ import { runGuardrails, recordExecution } from './guardrails';
 import { logger } from './logger';
 import { getExplorerUrl, getAddressExplorerUrl } from './network-config';
 import { generateReceipt, ReceiptData } from './receipt';
+import { AutonomousEngine, AutonomousAlert } from './autonomous';
 
 // ── Telegram Markdown escape helper ──────────────────────────────────────────
 // Escapes special chars that break Telegram's Markdown parser
@@ -50,6 +51,41 @@ export function createTelegramBot(token: string): Telegraf {
     // Track users awaiting private key export confirmation
     const pendingExportConfirm = new Set<number>();
 
+    // ─── Initialize Autonomous Engine ───────────────────────────────────────
+    const autonomous = new AutonomousEngine(bot, store);
+    autonomous.start();
+
+    // Handle background triggers
+    autonomous.onTrigger(async (chatId, cmd) => {
+        const session = store.getSession(chatId);
+        if (!session) return;
+
+        try {
+            // Guardrails
+            const priceData = await getSOLPrice();
+            const walletState = await session.wallet.getFullState(priceData.solPriceUSD, priceData.priceChange24h);
+            const guardrailResult = runGuardrails(cmd, walletState);
+            if (!guardrailResult.passed) {
+                await bot.telegram.sendMessage(chatId, `🛑 Autonomous trigger failed guardrails: ${guardrailResult.reason}`);
+                return;
+            }
+
+            // Execute
+            const pajPoolAddress = cmd.action === 'swap_to_naira' ? store.getPajPoolAddress(chatId) : undefined;
+            const result = await session.executor.execute(cmd, guardrailResult.resolvedAmountSOL, pajPoolAddress);
+
+            if (result.success && result.signature) {
+                recordExecution();
+                const explorerUrl = getExplorerUrl(result.signature, session.network);
+                await bot.telegram.sendMessage(chatId, `✅ *Autonomous Execution Complete*\nAction: ${cmd.action}\n[View TX](${explorerUrl})`, { parse_mode: 'Markdown' });
+            } else {
+                await bot.telegram.sendMessage(chatId, `❌ Autonomous Execution Failed: ${result.error}`);
+            }
+        } catch (e) {
+            logger.error('Autonomous trigger error', { error: e });
+        }
+    });
+
     // ── Register command menu (visible in Telegram UI) ────────────────────────
     bot.telegram.setMyCommands([
         { command: 'start', description: '👋 Welcome & getting started' },
@@ -65,6 +101,7 @@ export function createTelegramBot(token: string): Telegraf {
         { command: 'network', description: '🌐 Switch devnet/mainnet' },
         { command: 'setpool', description: '🏦 Set PAJ TX Pool address' },
         { command: 'pool', description: '📋 View PAJ TX Pool address' },
+        { command: 'alerts', description: '🤖 View active autonomous tasks' },
         { command: 'export', description: '📍 Show public key & explorer link' },
         { command: 'exportkey', description: '🔐 Export private key (secure)' },
         { command: 'help', description: '📋 List all commands' },
@@ -441,6 +478,33 @@ export function createTelegramBot(token: string): Telegraf {
                 `❌ Failed to fetch balance: ${msg}`
             );
         }
+    });
+
+    // ── /alerts ─────────────────────────────────────────────────────────────
+
+    bot.command('alerts', async (ctx) => {
+        const chatId = ctx.chat.id;
+        if (!store.hasSession(chatId)) {
+            await ctx.reply('⚠️ Please /unlock your wallet first.');
+            return;
+        }
+
+        const activeAlerts = autonomous.getUserAlerts(chatId);
+        if (activeAlerts.length === 0) {
+            await ctx.reply('📭 You have no active autonomous alerts or DCA schedules.');
+            return;
+        }
+
+        let msg = `🤖 *Active Autonomous Tasks:*\n\n`;
+        activeAlerts.forEach((a, i) => {
+            if (a.type === 'price_trigger') {
+                msg += `${i + 1}. *Price Trigger:* When SOL drops/rises ${a.condition} $${a.triggerPriceUSD}\n   Action: ${a.actionCmd?.action}\n`;
+            } else if (a.type === 'dca_schedule') {
+                msg += `${i + 1}. *DCA Schedule:* ${a.remainingOrders} orders remaining\n   Action: ${a.actionCmd?.action}\n`;
+            }
+        });
+
+        await ctx.reply(msg, { parse_mode: 'Markdown' });
     });
 
     // ── /airdrop ─────────────────────────────────────────────────────────────
@@ -1000,7 +1064,42 @@ export function createTelegramBot(token: string): Telegraf {
                 }
             }
 
-            // 6. Execute — show typing while processing
+            // 6. Handle Autonomous DCA scheduling
+            if (cmd.action === 'dca') {
+                const numOrders = cmd.params.numOrders ?? 2;
+                const intervalDays = cmd.params.intervalDays ?? 1;
+
+                // Calculate amount per order
+                const amountPerOrder = (guardrailResult.resolvedAmountSOL ?? cmd.params.amountSOL ?? 0) / numOrders;
+
+                // Set the specific execution command
+                const execCmd = {
+                    ...cmd,
+                    action: 'swap',
+                    params: { ...cmd.params, amountSOL: amountPerOrder, amountPercent: undefined }
+                };
+
+                autonomous.addAlert({
+                    chatId,
+                    type: 'dca_schedule',
+                    intervalMs: intervalDays * 24 * 60 * 60 * 1000,
+                    nextExecutionTime: Date.now(), // Execute first one immediately or wait? We wait.
+                    remainingOrders: numOrders,
+                    actionCmd: execCmd
+                });
+
+                await ctx.reply(
+                    `🤖 *Autonomous DCA Scheduled*\n` +
+                    `Total: ${guardrailResult.resolvedAmountSOL ?? cmd.params.amountSOL} ${cmd.params.inputToken ?? 'SOL'}\n` +
+                    `Orders: ${numOrders}\n` +
+                    `Frequency: Every ${intervalDays} day(s)\n\n` +
+                    `💬 _${escMd(cmd.reasoning)}_`,
+                    { parse_mode: 'Markdown', reply_parameters: { message_id: ctx.message.message_id } }
+                );
+                return;
+            }
+
+            // 7. Execute actual transactions — show typing while processing
             await ctx.sendChatAction('typing');
 
             const pajPoolAddress = cmd.action === 'swap_to_naira' ? store.getPajPoolAddress(chatId) : undefined;
@@ -1081,6 +1180,7 @@ export function createTelegramBot(token: string): Telegraf {
     const shutdown = (signal: string) => {
         logger.audit('AGENT_STOP', `Bot shutting down (${signal})`);
         store.lockAll();
+        autonomous.stop();
         bot.stop(signal);
         process.exit(0);
     };

@@ -9,6 +9,7 @@ An **autonomous, AI-powered Solana wallet** that interprets natural language tra
 | 🔑 **Encrypted wallet** | AES-256-GCM + scrypt keystores, per-user, per-network |
 | 📥 **Import/Export** | Import from base58 keys, export with security confirmation |
 | 🧠 **AI-powered trading** | Groq (Llama 3.3 70B) interprets natural language → guardrail checks → execution |
+| 🤖 **Autonomous Engine** | Background price monitoring, condition-based execution, and automated callbacks |
 | 🔄 **Jupiter swaps** | Swap SOL ↔ USDC/USDT via Jupiter aggregator |
 | 🪨 **Marinade staking** | Stake SOL via native Solana staking |
 | 📈 **Jupiter DCA** | Dollar-cost averaging with on-chain DCA positions |
@@ -43,6 +44,13 @@ Telegram User
               │ Jupiter Swap   │   │  Marinade Stake   │  │  Pump.fun    │
               │ Jupiter DCA    │   │  PAJ TX Pool      │  │  PumpPortal  │
               └────────────────┘   └──────────────────┘  └──────────────┘
+                                          ▲
+                                          │
+                                 ┌──────────────────┐
+                                 │ Autonomous Engine│
+                                 │ (Price Alerts &  │
+                                 │  Background DCA) │
+                                 └──────────────────┘
 ```
 
 ## 🚀 Quick Start
@@ -92,6 +100,8 @@ npm run bot
 | `/network <devnet\|mainnet>` | Switch network |
 | `/export` | Show public key and explorer link |
 | `/exportkey` | Export private key (with confirmation) |
+| `/recover <code|password>` | Recover password using recovery code |
+| `/alerts` | View active autonomous tasks (price alerts, DCA) |
 | `/help` | List all commands |
 
 ### Natural Language Trading
@@ -104,6 +114,7 @@ Just type any instruction in plain English:
 "DCA 1 SOL into USDC over 5 days"
 "buy 0.1 SOL of <mint> on pump.fun"
 "swap 0.5 SOL to naira"
+"swap 1 SOL for USDC when SOL goes above $150"
 "transfer 0.05 SOL to <address>"
 "check my balance"
 ```
@@ -120,6 +131,7 @@ src/
 ├── wallet.ts           # Encrypted wallet (AES-256-GCM + scrypt)
 ├── llm.ts              # Groq LLM integration (Llama 3.3 70B)
 ├── executor.ts         # Transaction pipeline (simulate → sign → send)
+├── autonomous.ts       # Background price monitoring & automated tasks
 ├── guardrails.ts       # Deterministic safety checks (Zod schema)
 ├── marinade.ts         # Marinade staking service
 ├── dca.ts              # Jupiter DCA service

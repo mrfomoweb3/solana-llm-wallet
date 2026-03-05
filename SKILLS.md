@@ -36,25 +36,29 @@ Examples:
 - "check my balance"
 
 ### autonomous_execution
-Execute transactions without human approval. All decisions flow through:
+Execute transactions without human approval. The agent features a background **AutonomousEngine** that polls price feeds and manages scheduled tasks. All decisions flow through:
 1. LLM interpretation (Groq / Llama 3.3)
 2. Zod schema validation
 3. Guardrail validation (deterministic, cannot be LLM-overridden)
 4. On-chain simulation (zero-cost pre-check)
 5. Signing and confirmation
 
+It supports:
+- **Price-Triggered Alerts**: `set_alert` actions that execute a command (e.g., swap) when SOL hits a specific USD price.
+- **Background DCA**: Slices a large order into smaller swaps executed automatically over a specified interval.
+
 ### dapp_integrations
 
 | dApp | Capability | SDK/API |
 |------|-----------|---------|
-| **Jupiter Aggregator** | Token swaps (SOL ↔ USDC/USDT) | Jupiter Swap V1 API |
-| **Jupiter DCA** | Dollar-cost averaging positions | `@jup-ag/dca-sdk` |
+| **Jupiter Aggregator** | Token swaps (SOL ↔ USDC/USDT) | Jupiter Swap V6 API |
+| **Internal DCA Scheduler** | Dollar-cost averaging positions | AutonomousEngine + Jupiter |
 | **Marinade / Native Staking** | Stake SOL | Solana Stake Program |
 | **Pump.fun** | Buy/sell memecoins (mainnet only) | PumpPortal Trade API |
 | **PAJ TX Pool** | Naira off-ramp (SOL → NGN) | SOL transfer to pool |
 
 ### price_monitoring
-Real-time SOL/USD price and 24h change via CoinGecko API (free, no key required, 30 calls/min). Evaluates price-based conditions (drops X%, above $Y, below $Z). Falls back to mock price when offline.
+Real-time SOL/USD price and 24h change via CoinGecko API (free, no key required, 30 calls/min). Evaluates price-based conditions (drops X%, above $Y, below $Z) and powers the background `set_alert` price triggers. Falls back to mock price when offline.
 
 ### portfolio_tracking
 Display SOL + USDC balances with real-time USD portfolio valuation via `/balance` command.
@@ -71,10 +75,11 @@ swap           → Jupiter token swap
 transfer       → SOL transfer to address
 stake          → Native SOL staking
 unstake        → (not yet implemented)
-dca            → Jupiter DCA position creation
+dca            → Background DCA schedule creation
 pump_buy       → Buy Pump.fun token with SOL
 pump_sell      → Sell Pump.fun token for SOL
 swap_to_naira  → Transfer SOL to PAJ TX Pool
+set_alert      → Create a background price-triggered task
 hold           → No action (AI decided to wait)
 check_balance  → Display balances
 ```
@@ -113,7 +118,6 @@ All guardrails are enforced deterministically and cannot be overridden by the LL
 
 - **Max 1 SOL per transaction** — hardcoded guardrail
 - **Pump.fun is mainnet only** — no devnet support
-- **Jupiter DCA minimums** — $100 total, 2+ orders, $50/order
 - **Unstaking** — not yet automated
 - **No leveraged trading** — only spot swaps and staking
 - **Rate limits** — Groq (30 RPM free tier), CoinGecko (30/min)

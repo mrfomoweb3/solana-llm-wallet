@@ -263,7 +263,27 @@ If the LLM returns invalid JSON or fails schema validation, the agent defaults t
 
 ---
 
-## 4. dApp & Protocol Integrations
+## 4. Autonomous Engine
+
+The system includes a dedicated `AutonomousEngine` that runs in the background independently from the Telegram command handler. This engine allows agents to execute trades proactively based on market conditions rather than waiting for user input.
+
+### 4.1 Price-Triggered Alerts
+Users can instruct the AI to execute trades when specific price thresholds are met:
+- *“buy 1 SOL worth of USDC when SOL goes below $120”*
+- The AI creates a `price_trigger` alert stored in the engine's state.
+- The engine polls CoinGecko every 60 seconds and evaluates all active conditions.
+- When a threshold is crossed, the engine automatically routes the saved command through the Guardrails and Executor pipelines.
+- The user is notified asynchronously upon execution via Telegram.
+
+### 4.2 Background DCA Scheduling
+The autonomous engine also handles Dollar-Cost Averaging schedules without requiring Jupiter's external on-chain DCA program.
+- Example: *“DCA 1 SOL into USDC over 5 days”*
+- The LLM parses this intention and breaks the order into 5 parts.
+- The engine stores a `dca_schedule` alert and executes fractions of the total order automatically at the defined intervals, sending receipts each time.
+
+---
+
+## 5. dApp & Protocol Integrations
 
 ### 4.1 Jupiter DEX Aggregator (Swaps)
 
@@ -292,7 +312,7 @@ Buys and sells memecoins via PumpPortal REST API:
 - Supports token mint address-based trading
 - Mainnet only
 
-### 4.5 Naira Off-Ramp (PAJ TX Pool)
+### 5.5 Naira Off-Ramp (PAJ TX Pool)
 
 Swaps SOL/USDC to naira via PAJ TX Pool:
 - User sets pool address with `/setpool`
@@ -301,7 +321,7 @@ Swaps SOL/USDC to naira via PAJ TX Pool:
 
 ---
 
-## 5. Network Configuration
+## 6. Network Configuration
 
 | Property | Devnet | Mainnet |
 |----------|--------|---------|
@@ -316,17 +336,18 @@ Switching is per-agent: say "switch to mainnet" or use `/network mainnet`.
 
 ---
 
-## 6. Real-Time Price Feed
+## 7. Real-Time Price Feed
 
 The agent uses **CoinGecko API** for real-time SOL pricing:
 - Polled every 30 seconds (with smart caching)
 - Provides: current USD price, 24h change %, market cap
 - Fed into every LLM decision as context
 - Powers portfolio USD valuation
+- Triggers autonomous execution via the `AutonomousEngine`
 
 ---
 
-## 7. Audit Trail
+## 8. Audit Trail
 
 Every decision is logged to `audit.log.jsonl` in append-only JSONL format:
 
@@ -341,7 +362,7 @@ This provides a complete, tamper-evident record of every AI decision, guardrail 
 
 ---
 
-## 8. Multi-Agent Scalability
+## 9. Multi-Agent Scalability
 
 ### 8.1 Architecture
 
@@ -370,7 +391,7 @@ A test script (`scripts/multi-agent-demo.ts`) demonstrates 3 agents operating in
 
 ---
 
-## 9. File Structure
+## 10. File Structure
 
 ```
 src/
@@ -378,6 +399,7 @@ src/
 ├── llm.ts             # Groq LLM integration, system prompt
 ├── guardrails.ts      # Deterministic safety rules (Zod)
 ├── executor.ts        # Transaction building & execution
+├── autonomous.ts      # Background price monitoring & tasks
 ├── telegram-bot.ts    # Telegram UI & NL handler
 ├── user-store.ts      # Multi-agent session management
 ├── price-feed.ts      # CoinGecko real-time price feed
