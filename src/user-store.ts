@@ -145,14 +145,14 @@ export class UserStore {
 
     /**
      * Create a new wallet for a user.
-     * Returns the public key string.
+     * Returns { publicKey, recoveryCode }.
      */
-    async createWallet(chatId: number, password: string): Promise<string> {
+    async createWallet(chatId: number, password: string): Promise<{ publicKey: string; recoveryCode: string }> {
         const network = this.getUserNetwork(chatId);
         const keystorePath = this.getKeystorePath(chatId, network);
 
         const wallet = new AgentWallet(network, keystorePath);
-        const pubkey = await wallet.create(password);
+        const result = await wallet.create(password);
 
         // Immediately unlock and create session
         await wallet.unlock(password);
@@ -170,7 +170,25 @@ export class UserStore {
 
         this.sessions.set(chatId, session);
 
-        logger.info(`Created wallet for user ${chatId} on ${network}: ${pubkey}`);
+        logger.info(`Created wallet for user ${chatId} on ${network}: ${result.publicKey}`);
+        return result;
+    }
+
+    /**
+     * Recover wallet using a recovery code. Re-encrypts with a new password.
+     * Returns the wallet public key.
+     */
+    async recoverWallet(chatId: number, recoveryCode: string, newPassword: string): Promise<string> {
+        const network = this.getUserNetwork(chatId);
+        const keystorePath = this.getKeystorePath(chatId, network);
+
+        const wallet = new AgentWallet(network, keystorePath);
+        const pubkey = await wallet.recoverWithCode(recoveryCode, newPassword);
+
+        // Lock any existing session
+        this.lockSession(chatId);
+
+        logger.info(`Wallet recovered for user ${chatId} on ${network}: ${pubkey}`);
         return pubkey;
     }
 

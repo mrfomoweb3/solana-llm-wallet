@@ -114,8 +114,19 @@ export function runGuardrails(
   let resolvedAmountSOL: number | undefined;
 
   if (cmd.action === 'swap' || cmd.action === 'transfer' || cmd.action === 'swap_to_naira' || cmd.action === 'stake' || cmd.action === 'unstake' || cmd.action === 'dca' || cmd.action === 'pump_buy') {
+
+    // Determine if this is a USDC-denominated transaction
+    const isUSDCInput = cmd.params.inputToken?.toUpperCase() === 'USDC';
+    const availableBalance = isUSDCInput
+      ? walletState.usdcBalance
+      : walletState.solBalance - (cfg.minSolRentReserve ?? 0.01);
+
     if (cmd.params.amountPercent !== undefined) {
-      resolvedAmountSOL = (cmd.params.amountPercent / 100) * walletState.solBalance;
+      resolvedAmountSOL = (cmd.params.amountPercent / 100) * (isUSDCInput ? walletState.usdcBalance : walletState.solBalance);
+      // Reserve rent for SOL swaps
+      if (!isUSDCInput && resolvedAmountSOL > availableBalance) {
+        resolvedAmountSOL = availableBalance;
+      }
     } else if (cmd.params.amountSOL !== undefined) {
       resolvedAmountSOL = cmd.params.amountSOL;
     }
@@ -124,36 +135,38 @@ export function runGuardrails(
       return block('AMOUNT_MISSING', 'No amount specified for swap/transfer.');
     }
 
-    // Max per transaction
-    if (resolvedAmountSOL > cfg.maxTransactionSOL) {
+    // Skip the max-SOL-per-tx check for USDC swaps (1 USDC != 1 SOL)
+    if (!isUSDCInput && resolvedAmountSOL > cfg.maxTransactionSOL) {
       return block(
         'AMOUNT_LIMIT',
         `Amount ${resolvedAmountSOL.toFixed(4)} SOL exceeds max ${cfg.maxTransactionSOL} SOL per transaction.`
       );
     }
 
-    // Balance check (keep 0.01 SOL for rent/fees)
-    const availableSOL = walletState.solBalance - 0.01;
-    if (resolvedAmountSOL > availableSOL) {
+    // Balance check
+    if (resolvedAmountSOL > availableBalance) {
+      const token = isUSDCInput ? 'USDC' : 'SOL';
       return block(
         'INSUFFICIENT_BALANCE',
-        `Amount ${resolvedAmountSOL.toFixed(4)} SOL exceeds available balance ${availableSOL.toFixed(4)} SOL.`
+        `Amount ${resolvedAmountSOL.toFixed(4)} ${token} exceeds available balance ${availableBalance.toFixed(4)} ${token}.`
       );
     }
 
-    // Large trade gate — requires explicit confirmation threshold
-    const pctOfBalance = (resolvedAmountSOL / walletState.solBalance) * 100;
-    if (pctOfBalance > cfg.largeTradeThresholdPct) {
-      logger.audit('GUARDRAIL_BLOCK',
-        `Large trade gate triggered: ${pctOfBalance.toFixed(1)}% of balance`,
-        { resolvedAmountSOL, balancePct: pctOfBalance, threshold: cfg.largeTradeThresholdPct }
-      );
-      // On devnet we warn but still allow; on mainnet this would require human confirmation
-      if (cfg.requireHumanConfirmForLargeTrades) {
-        return block(
-          'LARGE_TRADE_GATE',
-          `Trade is ${pctOfBalance.toFixed(1)}% of balance (>${cfg.largeTradeThresholdPct}%). Human confirmation required.`
+    // Large trade gate
+    const balance = isUSDCInput ? walletState.usdcBalance : walletState.solBalance;
+    if (balance > 0) {
+      const pctOfBalance = (resolvedAmountSOL / balance) * 100;
+      if (pctOfBalance > cfg.largeTradeThresholdPct) {
+        logger.audit('GUARDRAIL_BLOCK',
+          `Large trade gate triggered: ${pctOfBalance.toFixed(1)}% of balance`,
+          { resolvedAmountSOL, balancePct: pctOfBalance, threshold: cfg.largeTradeThresholdPct }
         );
+        if (cfg.requireHumanConfirmForLargeTrades) {
+          return block(
+            'LARGE_TRADE_GATE',
+            `Trade is ${pctOfBalance.toFixed(1)}% of balance (>${cfg.largeTradeThresholdPct}%). Human confirmation required.`
+          );
+        }
       }
     }
   }

@@ -169,13 +169,13 @@ export function createTelegramBot(token: string): Telegraf {
         const statusMsg = await ctx.reply('⏳ Generating keypair and encrypting...');
 
         try {
-            const pubkey = await store.createWallet(chatId, args);
+            const result = await store.createWallet(chatId, args);
 
             let response =
                 `✅ *Wallet Created!*\n\n` +
                 `🌐 *Network:* \`${network}\`\n` +
-                `🔑 *Public Key:*\n\`${pubkey}\`\n\n` +
-                `🔗 [View on Explorer](${getAddressExplorerUrl(pubkey, network)})`;
+                `🔑 *Public Key:*\n\`${result.publicKey}\`\n\n` +
+                `🔗 [View on Explorer](${getAddressExplorerUrl(result.publicKey, network)})`;
 
             // Airdrop on devnet
             if (network === 'devnet') {
@@ -193,6 +193,22 @@ export function createTelegramBot(token: string): Telegraf {
             response += `\n\n🔒 _Your password was auto-deleted. Remember it — it cannot be recovered!_`;
 
             await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, undefined, response, { parse_mode: 'Markdown' });
+
+            // Send recovery code as a SEPARATE auto-deleting message
+            const recoveryMsg = await ctx.reply(
+                `🔐 *RECOVERY CODE — SAVE THIS!*\n\n` +
+                `\`${result.recoveryCode}\`\n\n` +
+                `If you forget your password, use:\n` +
+                `\`/recover ${result.recoveryCode} NewPassword\`\n\n` +
+                `⚠️ _This message will auto-delete in 60 seconds._`,
+                { parse_mode: 'Markdown' }
+            );
+
+            // Auto-delete recovery code message after 60 seconds
+            setTimeout(async () => {
+                try { await ctx.telegram.deleteMessage(chatId, recoveryMsg.message_id); } catch { }
+            }, 60000);
+
         } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
             await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, undefined, `❌ Failed to create wallet: ${msg}`);
@@ -261,6 +277,60 @@ export function createTelegramBot(token: string): Telegraf {
                 statusMsg.message_id,
                 undefined,
                 `❌ Import failed: ${msg}`
+            );
+        }
+    });
+
+    // ── /recover <recoveryCode> <newPassword> ───────────────────────────────
+
+    bot.command('recover', async (ctx) => {
+        const chatId = ctx.chat.id;
+
+        // Delete the message immediately (contains recovery code + password)
+        try { await ctx.deleteMessage(); } catch { /* may lack permissions */ }
+
+        const args = ctx.message.text.split(' ').slice(1);
+        if (args.length < 2) {
+            await ctx.reply(
+                '⚠️ Usage:\n`/recover ORE-XXXX-XXXX NewPassword`\n\n' +
+                '_Resets your wallet password using your recovery code._\n' +
+                '_Your message will be auto-deleted for security._',
+                { parse_mode: 'Markdown' }
+            );
+            return;
+        }
+
+        const recoveryCode = args[0];
+        const newPassword = args.slice(1).join(' ');
+
+        if (!store.hasKeystore(chatId)) {
+            await ctx.reply('❌ No wallet found. Use /create to make one first.');
+            return;
+        }
+
+        const statusMsg = await ctx.reply('🔑 Verifying recovery code...');
+
+        try {
+            const pubkey = await store.recoverWallet(chatId, recoveryCode, newPassword);
+
+            await ctx.telegram.editMessageText(
+                ctx.chat.id,
+                statusMsg.message_id,
+                undefined,
+                `✅ *Password Reset Successful!*\n\n` +
+                `🔑 *Wallet:* \`${pubkey.substring(0, 16)}...\`\n` +
+                `🔒 Your wallet is now protected with the new password.\n\n` +
+                `Use \`/unlock NewPassword\` to access your wallet.\n\n` +
+                `⚠️ _A new recovery code was generated. Note: you'll see it the next time you recreate or the old recovery code may still work if you didn't change it._`,
+                { parse_mode: 'Markdown' }
+            );
+        } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            await ctx.telegram.editMessageText(
+                ctx.chat.id,
+                statusMsg.message_id,
+                undefined,
+                `❌ Recovery failed: ${msg}`
             );
         }
     });
@@ -966,8 +1036,10 @@ export function createTelegramBot(token: string): Telegraf {
                         type: cmd.action as ReceiptData['type'],
                         fromToken: cmd.params.inputToken ?? 'SOL',
                         toToken: cmd.params.outputToken ?? 'USDC',
-                        amount: cmd.params.amountSOL ?? guardrailResult.resolvedAmountSOL ?? 0,
-                        amountUSD: (cmd.params.amountSOL ?? guardrailResult.resolvedAmountSOL ?? 0) * priceData.solPriceUSD,
+                        amount: guardrailResult.resolvedAmountSOL ?? cmd.params.amountSOL ?? 0,
+                        amountUSD: (cmd.params.inputToken?.toUpperCase() === 'USDC')
+                            ? (guardrailResult.resolvedAmountSOL ?? cmd.params.amountSOL ?? 0)
+                            : (guardrailResult.resolvedAmountSOL ?? cmd.params.amountSOL ?? 0) * priceData.solPriceUSD,
                         signature: result.signature,
                         network: session.network,
                         walletAddress: walletState.publicKey,

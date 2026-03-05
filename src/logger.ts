@@ -38,6 +38,7 @@ export type AuditEventType =
   | 'AGENT_HOLD'
   | 'PRICE_CONDITION_CHECK'
   | 'ERROR'
+  | 'WALLET_RECOVERED'
   | 'AGENT_STOP';
 
 export interface AuditEntry {
@@ -88,6 +89,7 @@ const EVENT_STYLES: Record<AuditEventType, (msg: string) => string> = {
   AGENT_HOLD: (m) => chalk.gray(`⏸  ${m}`),
   PRICE_CONDITION_CHECK: (m) => chalk.blue(`📊 ${m}`),
   ERROR: (m) => chalk.bold.red(`💥 ${m}`),
+  WALLET_RECOVERED: (m) => chalk.bold.yellow(`🔑 ${m}`),
   AGENT_STOP: (m) => chalk.gray(`🛑 ${m}`),
 };
 

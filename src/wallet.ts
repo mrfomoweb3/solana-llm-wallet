@@ -62,6 +62,13 @@ export interface EncryptedKeystore {
   publicKey: string;     // store public key unencrypted for reference
   createdAt: string;
   network: string;
+  // Recovery code backup encryption
+  recovery?: {
+    saltHex: string;
+    ivHex: string;
+    ciphertextHex: string;
+    tagHex: string;
+  };
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -73,6 +80,20 @@ const SCRYPT_N = 16384; // 2^14 (2^17 exceeds Node.js crypto memory limits)
 const SCRYPT_R = 8;
 const SCRYPT_P = 1;
 const SCRYPT_LEN = 32;
+
+// ─── Recovery Code Generator ──────────────────────────────────────────────────
+
+/** Generates a recovery code in format ORE-XXXX-XXXX using crypto-safe randomness. */
+function generateRecoveryCode(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no I,O,0,1 to avoid confusion
+  const bytes = randomBytes(8);
+  let code = 'ORE-';
+  for (let i = 0; i < 8; i++) {
+    if (i === 4) code += '-';
+    code += chars[bytes[i] % chars.length];
+  }
+  return code;
+}
 
 // ─── Wallet Class ─────────────────────────────────────────────────────────────
 
@@ -104,9 +125,9 @@ export class AgentWallet {
 
   /**
    * Generates a fresh keypair, encrypts it, and persists the keystore.
-   * Returns the public key string.
+   * Returns { publicKey, recoveryCode } — the recovery code is shown ONCE.
    */
-  async create(password: string): Promise<string> {
+  async create(password: string): Promise<{ publicKey: string; recoveryCode: string }> {
     if (fs.existsSync(this._keystorePath)) {
       throw new Error(
         `Keystore already exists at ${this._keystorePath}. ` +
@@ -123,7 +144,13 @@ export class AgentWallet {
     const keypair = Keypair.generate();
     const secretKey = keypair.secretKey; // Uint8Array(64)
 
+    // Generate recovery code: ORE-XXXX-XXXX
+    const recoveryCode = generateRecoveryCode();
+
+    // Dual encrypt: password + recovery code
     const keystore = this._encrypt(secretKey, password, keypair.publicKey.toString());
+    keystore.recovery = this._encryptRecovery(secretKey, recoveryCode);
+
     fs.writeFileSync(this._keystorePath, JSON.stringify(keystore, null, 2), { mode: 0o600 });
 
     // Zero the secret key buffer (best-effort)
@@ -132,7 +159,7 @@ export class AgentWallet {
     logger.info(`Wallet created: ${keypair.publicKey.toString()}`);
     logger.info(`Keystore written to: ${this._keystorePath}`);
 
-    return keypair.publicKey.toString();
+    return { publicKey: keypair.publicKey.toString(), recoveryCode };
   }
 
   /**
@@ -285,6 +312,94 @@ export class AgentWallet {
       createdAt: new Date().toISOString(),
       network: this._network,
     };
+  }
+
+  /** Encrypt the secret key with the recovery code (separate salt/iv/ciphertext). */
+  private _encryptRecovery(
+    secretKey: Uint8Array,
+    recoveryCode: string
+  ): { saltHex: string; ivHex: string; ciphertextHex: string; tagHex: string } {
+    const salt = randomBytes(16);
+    const iv = randomBytes(12);
+
+    const derivedKey = scryptSync(recoveryCode, salt, SCRYPT_LEN, {
+      N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P,
+    });
+
+    const cipher = createCipheriv('aes-256-gcm', derivedKey, iv);
+    const encrypted = Buffer.concat([
+      cipher.update(Buffer.from(secretKey)),
+      cipher.final(),
+    ]);
+    const tag = cipher.getAuthTag();
+
+    derivedKey.fill(0);
+
+    return {
+      saltHex: salt.toString('hex'),
+      ivHex: iv.toString('hex'),
+      ciphertextHex: encrypted.toString('hex'),
+      tagHex: tag.toString('hex'),
+    };
+  }
+
+  /**
+   * Recover wallet with recovery code: decrypts private key using recovery ciphertext,
+   * then re-encrypts with a new password. Returns the public key.
+   */
+  async recoverWithCode(recoveryCode: string, newPassword: string): Promise<string> {
+    if (!fs.existsSync(this._keystorePath)) {
+      throw new Error('No keystore found. Create a wallet first.');
+    }
+
+    const data = JSON.parse(fs.readFileSync(this._keystorePath, 'utf-8')) as EncryptedKeystore;
+
+    if (!data.recovery) {
+      throw new Error('This wallet has no recovery code set. It was created before recovery codes were supported.');
+    }
+
+    // Decrypt using recovery code
+    const salt = Buffer.from(data.recovery.saltHex, 'hex');
+    const iv = Buffer.from(data.recovery.ivHex, 'hex');
+    const ciphertext = Buffer.from(data.recovery.ciphertextHex, 'hex');
+    const tag = Buffer.from(data.recovery.tagHex, 'hex');
+
+    const derivedKey = scryptSync(recoveryCode, salt, SCRYPT_LEN, {
+      N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P,
+    });
+
+    const decipher = createDecipheriv('aes-256-gcm', derivedKey, iv);
+    decipher.setAuthTag(tag);
+
+    let secretKey: Buffer;
+    try {
+      secretKey = Buffer.concat([
+        decipher.update(ciphertext),
+        decipher.final(),
+      ]);
+    } catch {
+      derivedKey.fill(0);
+      throw new Error('Invalid recovery code.');
+    }
+
+    derivedKey.fill(0);
+
+    // Generate new recovery code for the re-encrypted wallet
+    const newRecoveryCode = generateRecoveryCode();
+
+    // Re-encrypt with new password + new recovery code
+    const newKeystore = this._encrypt(secretKey, newPassword, data.publicKey);
+    newKeystore.recovery = this._encryptRecovery(secretKey, newRecoveryCode);
+
+    // Zero the secret key
+    secretKey.fill(0);
+
+    // Overwrite keystore
+    fs.writeFileSync(this._keystorePath, JSON.stringify(newKeystore, null, 2), { mode: 0o600 });
+
+    logger.audit('WALLET_RECOVERED', `Wallet ${data.publicKey} recovered with recovery code`);
+
+    return data.publicKey;
   }
 
   private _decrypt(keystore: EncryptedKeystore, password: string): Uint8Array {
