@@ -5,7 +5,7 @@
   "main": "dist/agent.js",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/agent.js",
+    "start": "node dist/bot.js",
     "dev": "ts-node src/agent.ts",
     "bot": "ts-node src/bot.ts",
     "setup": "ts-node scripts/setup.ts",
