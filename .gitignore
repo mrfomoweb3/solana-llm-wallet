@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+.keystore.json
+keystores/
+audit.log.jsonl
+*.log
+.DS_Store

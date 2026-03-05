@@ -1,0 +1,34 @@
+{
+  "_comment": "Guardrail configuration — all limits enforced deterministically, LLM cannot override these.",
+  "allowedActions": [
+    "swap",
+    "transfer",
+    "hold",
+    "check_balance",
+    "swap_to_naira",
+    "stake",
+    "unstake",
+    "dca",
+    "pump_buy",
+    "pump_sell",
+    "switch_network",
+    "airdrop"
+  ],
+  "allowedTokens": [
+    "SOL",
+    "USDC",
+    "USDT"
+  ],
+  "maxTransactionSOL": 1.0,
+  "maxSlippageBps": 100,
+  "largeTradeThresholdPct": 50,
+  "requireHumanConfirmForLargeTrades": false,
+  "cooldownMs": 30000,
+  "maxDailyTransactions": 20,
+  "allowedPrograms": [
+    "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+    "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"
+  ],
+  "network": "devnet",
+  "minSolRentReserve": 0.01
+}
