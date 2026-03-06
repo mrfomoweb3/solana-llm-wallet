@@ -1182,6 +1182,71 @@ export function createTelegramBot(token: string): Telegraf {
                     return;
                 }
 
+                // 3d. Handle spawn_agent — LLM can spawn sub-agents via natural language
+                if (cmd.action === 'spawn_agent' as any) {
+                    const role = (cmd.params as any).agentRole?.toLowerCase() ?? '';
+                    const validRoles = ['trader', 'analyst', 'sniper'];
+                    if (!validRoles.includes(role)) {
+                        await ctx.reply(
+                            `${stepLabel}🤖 _${escMd(cmd.reasoning)}_\n\nAvailable roles: \`trader\`, \`analyst\`, \`sniper\``,
+                            { parse_mode: 'Markdown', reply_parameters: { message_id: ctx.message.message_id } }
+                        );
+                        continue;
+                    }
+                    try {
+                        const agent = await agentManager.spawnAgent(chatId, role as any, session.network);
+                        await ctx.reply(
+                            `${stepLabel}${agent.emoji} *${agent.name} Spawned!*\n\n` +
+                            `🔑 Wallet: \`${agent.publicKey.substring(0, 20)}...\`\n` +
+                            `🧠 Role: ${agent.role}\n\n` +
+                            `💬 _${escMd(cmd.reasoning)}_`,
+                            { parse_mode: 'Markdown', reply_parameters: { message_id: ctx.message.message_id } }
+                        );
+                    } catch (err: any) {
+                        await ctx.reply(`${stepLabel}❌ ${err.message}`, { reply_parameters: { message_id: ctx.message.message_id } });
+                    }
+                    continue;
+                }
+
+                // 3e. Handle list_agents — LLM can show agents via natural language
+                if (cmd.action === 'list_agents' as any) {
+                    const agents = agentManager.getUserAgents(chatId);
+                    if (agents.length === 0) {
+                        await ctx.reply(
+                            `${stepLabel}💬 _${escMd(cmd.reasoning)}_\n\n👥 No sub-agents active. Say "spawn a trader" to create one!`,
+                            { parse_mode: 'Markdown', reply_parameters: { message_id: ctx.message.message_id } }
+                        );
+                        continue;
+                    }
+                    let msg = `${stepLabel}👥 *Your Sub-Agents (${agents.length}/3)*\n\n`;
+                    for (const a of agents) {
+                        const status = a.isActive ? '🟢 Active' : '🔴 Inactive';
+                        msg += `${a.emoji} *${a.name}* — ${status}\n   Wallet: \`${a.publicKey.substring(0, 16)}...\`\n\n`;
+                    }
+                    msg += `💬 _${escMd(cmd.reasoning)}_`;
+                    await ctx.reply(msg, { parse_mode: 'Markdown', reply_parameters: { message_id: ctx.message.message_id } });
+                    continue;
+                }
+
+                // 3f. Handle kill_agent — LLM can kill agents via natural language
+                if (cmd.action === 'kill_agent' as any) {
+                    const role = (cmd.params as any).agentRole?.toLowerCase() ?? '';
+                    const killed = agentManager.killAgent(chatId, role);
+                    if (killed) {
+                        await ctx.reply(
+                            `${stepLabel}💀 *${killed.name} Deactivated*\n\n` +
+                            `💬 _${escMd(cmd.reasoning)}_`,
+                            { parse_mode: 'Markdown', reply_parameters: { message_id: ctx.message.message_id } }
+                        );
+                    } else {
+                        await ctx.reply(
+                            `${stepLabel}❌ No active agent with role "${role}" found.\n\n💬 _${escMd(cmd.reasoning)}_`,
+                            { parse_mode: 'Markdown', reply_parameters: { message_id: ctx.message.message_id } }
+                        );
+                    }
+                    continue;
+                }
+
                 // 4. Guardrail check
                 const guardrailResult = runGuardrails(cmd, walletState);
 

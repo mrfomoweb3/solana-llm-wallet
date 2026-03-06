@@ -36,7 +36,7 @@ import { WalletState } from './wallet';
 // ─── Command Schema (strict validation via zod) ────────────────────────────
 
 export const AgentCommandSchema = z.object({
-  action: z.enum(['swap', 'transfer', 'hold', 'check_balance', 'swap_to_naira', 'stake', 'unstake', 'dca', 'pump_buy', 'pump_sell', 'switch_network', 'airdrop', 'set_alert']),
+  action: z.enum(['swap', 'transfer', 'hold', 'check_balance', 'swap_to_naira', 'stake', 'unstake', 'dca', 'pump_buy', 'pump_sell', 'switch_network', 'airdrop', 'set_alert', 'spawn_agent', 'list_agents', 'kill_agent']),
   reasoning: z.string().min(1).max(1000),
   params: z.object({
     // Swap params — nullable because LLM may return null for unused fields
@@ -57,6 +57,8 @@ export const AgentCommandSchema = z.object({
     conditionDesc: z.string().nullable().optional().transform(v => v ?? undefined),
     triggerPriceUSD: z.number().nullable().optional().transform(v => v ?? undefined),
     condition: z.enum(['above', 'below']).nullable().optional().transform(v => v ?? undefined),
+    // Agent management params
+    agentRole: z.string().nullable().optional().transform(v => v ?? undefined),
   }).passthrough(),
 });
 
