@@ -123,11 +123,23 @@ export function runGuardrails(
       ? walletState.usdcBalance
       : walletState.solBalance - (cfg.minSolRentReserve ?? 0.01);
 
+    let resolvedAmountSOL: number | undefined;
+
     if (cmd.params.amountPercent !== undefined) {
       resolvedAmountSOL = (cmd.params.amountPercent / 100) * (isUSDCInput ? walletState.usdcBalance : walletState.solBalance);
       // Reserve rent for SOL swaps
       if (!isUSDCInput && resolvedAmountSOL > availableBalance) {
         resolvedAmountSOL = availableBalance;
+      }
+    } else if (typeof cmd.params.amountUSD === 'number') {
+      // If specifying USD, convert it to the underlying token
+      if (isUSDCInput) {
+        resolvedAmountSOL = cmd.params.amountUSD; // 1 USDC ≈ 1 USD
+      } else {
+        if (!walletState.solPriceUSD || walletState.solPriceUSD <= 0) {
+          return block('PRICE_UNAVAILABLE', 'Cannot calculate USD value: SOL price is currently unavailable.');
+        }
+        resolvedAmountSOL = cmd.params.amountUSD / walletState.solPriceUSD;
       }
     } else if (cmd.params.amountSOL !== undefined) {
       resolvedAmountSOL = cmd.params.amountSOL;
@@ -138,6 +150,7 @@ export function runGuardrails(
     }
 
     // Skip the max-SOL-per-tx check for USDC swaps (1 USDC != 1 SOL)
+    // And also skip it if we just converted a tiny USD amount
     if (!isUSDCInput && resolvedAmountSOL > cfg.maxTransactionSOL) {
       return block(
         'AMOUNT_LIMIT',

@@ -18,7 +18,7 @@ try {
     registerFont(path.join(ASSETS, 'Inter-Regular.ttf'), { family: 'Inter', weight: 'normal' });
     registerFont(path.join(ASSETS, 'Inter-Medium.ttf'), { family: 'Inter', weight: '500' });
     registerFont(path.join(ASSETS, 'Inter-Bold.ttf'), { family: 'Inter', weight: 'bold' });
-} catch { }
+} catch (e) { console.error("Error loading fonts:", e); }
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
