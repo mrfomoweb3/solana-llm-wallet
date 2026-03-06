@@ -23,11 +23,32 @@ import { getExplorerUrl, NetworkConfig, getNetworkConfig } from './network-confi
 
 // ─── Validators ─────────────────────────────────────────────────────────────
 
-// Well-known validators for delegation
-const VALIDATORS: Record<string, PublicKey> = {
-    'devnet': new PublicKey('agjKQFnqMYGifVTcvzMRaZzDPFAqG8yLPMJVsGKwkqM'),
-    'mainnet-beta': new PublicKey('7Sys29UqSSRwRe3arFKgBiKT7g5rAMKFTMESFqaBHEYV'), // Marinade validator
-};
+// Preferred mainnet validators (fallback if dynamic fetch fails)
+const MAINNET_VALIDATOR_FALLBACK = new PublicKey('7Sys29UqSSRwRe3arFKgBiKT7g5rAMKFTMESFqaBHEYV');
+
+/**
+ * Fetch a real, active vote account from the cluster.
+ * This avoids IncorrectProgramId errors caused by stale/invalid hardcoded validators.
+ */
+async function getActiveValidator(connection: Connection, network: string): Promise<PublicKey> {
+    try {
+        const voteAccounts = await connection.getVoteAccounts('confirmed');
+        // Pick the first active validator that has been voting recently
+        const active = voteAccounts.current;
+        if (active.length > 0) {
+            // Sort by activated stake (highest first) and pick the top one
+            active.sort((a, b) => b.activatedStake - a.activatedStake);
+            const picked = active[0];
+            logger.info(`Selected validator: ${picked.votePubkey} (stake: ${(picked.activatedStake / LAMPORTS_PER_SOL).toFixed(0)} SOL)`);
+            return new PublicKey(picked.votePubkey);
+        }
+    } catch (err) {
+        logger.error('Failed to fetch vote accounts, using fallback', { error: err });
+    }
+    // Fallback for mainnet
+    if (network === 'mainnet-beta') return MAINNET_VALIDATOR_FALLBACK;
+    throw new Error('No active validators found on this network.');
+}
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -69,11 +90,12 @@ export class MarinadeService {
             // Generate a new stake account keypair
             const stakeAccount = Keypair.generate();
 
-            // Get the validator vote account to delegate to
-            const validatorVote = VALIDATORS[network];
-            if (!validatorVote) {
-                return { success: false, error: `No known validator for network: ${network}` };
-            }
+            // Dynamically fetch a real active validator
+            const validatorVote = await getActiveValidator(this.connection, network);
+
+            // Get the minimum rent-exempt balance for a stake account
+            const rentExemption = await this.connection.getMinimumBalanceForRentExemption(200);
+            const totalLamports = lamports + rentExemption;
 
             // Create stake account with rent-exempt minimum + stake amount
             const createStakeAccountTx = StakeProgram.createAccount({
@@ -83,7 +105,7 @@ export class MarinadeService {
                     this.wallet.publicKey, // staker
                     this.wallet.publicKey, // withdrawer
                 ),
-                lamports,
+                lamports: totalLamports,
             });
 
             // Delegate the stake account to the validator

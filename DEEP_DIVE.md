@@ -419,7 +419,62 @@ scripts/
 
 ---
 
-## 10. Why This Matters
+## 10. Multi-Agent Scalability
+
+ORE AI supports **multiple independent agents per user**, each with its own wallet, LLM brain, and trading strategy.
+
+### 10.1 Architecture
+
+```
+User (Telegram)
+    │
+    ├── /spawn trader   → SubAgent { Keypair₁, LLMBrain₁, "aggressive" }
+    ├── /spawn analyst  → SubAgent { Keypair₂, LLMBrain₂, "cautious" }
+    └── /spawn sniper   → SubAgent { Keypair₃, LLMBrain₃, "precision" }
+```
+
+Each sub-agent is fully isolated:
+
+| Property | Isolation Level |
+|---|---|
+| **Wallet** | Own `Keypair.generate()` — unique on-chain address |
+| **LLM Brain** | Own `new LLMBrain()` — independent decision-making |
+| **Persona** | Role-specific system prompt modifier |
+| **State** | No shared mutable state between agents |
+| **Execution** | `Promise.all()` — truly concurrent |
+
+### 10.2 Agent Roles
+
+| Role | Emoji | Behavior |
+|---|---|---|
+| `trader` | 📈 | Aggressive — swaps, DCA, price triggers |
+| `analyst` | 🔍 | Cautious — portfolio analysis, rebalancing advice |
+| `sniper` | 🎯 | Precision — rapid price monitoring, instant execution |
+
+### 10.3 Per-User Session Isolation
+
+The `UserStore` uses `chatId` as the primary key, ensuring:
+- Each Telegram user has their own encrypted keystore
+- Sessions auto-lock after 30 minutes of inactivity
+- Network preferences (devnet/mainnet) are per-user
+- Sub-agents are scoped to their owner — User A cannot see User B's agents
+
+### 10.4 Scalability Proof
+
+The `multi-agent-demo.ts` script demonstrates 3 agents running concurrently:
+1. Each creates its own wallet (`Keypair.generate()`)
+2. Each gets its own LLM brain (`new LLMBrain()`)
+3. All 3 run simultaneously via `Promise.all()`
+4. Each makes **different decisions** based on its persona
+5. No shared state between agents
+
+```bash
+npx ts-node scripts/multi-agent-demo.ts
+```
+
+---
+
+## 11. Why This Matters
 
 Traditional crypto wallets are **passive** — they wait for explicit human input. ORE AI is an **active agent** that:
 
@@ -427,7 +482,9 @@ Traditional crypto wallets are **passive** — they wait for explicit human inpu
 2. **Decides** autonomously based on market data and wallet state
 3. **Executes** on-chain transactions with zero human intervention
 4. **Protects** itself with 6 independent security layers
-5. **Scales** to unlimited independent agents
+5. **Scales** to unlimited independent agents with per-user isolation
 6. **Integrates** with real Solana dApps (Jupiter, Marinade, DCA, Pump.fun)
+7. **Supports multiple agents** — each with its own wallet, brain, and strategy
 
 This is not a demo — it's a working prototype of what autonomous AI wallets will look like in production.
+

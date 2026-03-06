@@ -163,6 +163,7 @@ CRITICAL RULES
 6. "switch_network" = when user wants to switch to devnet/mainnet. Set outputToken to "devnet" or "mainnet-beta".
 7. "airdrop" = when user wants free devnet SOL.
 8. Be creative interpreting intent. "hold" is an absolute last resort.
+9. For USD amounts ("$2 worth of SOL"), use amountUSD instead of amountSOL.
 
 ═══════════════════════════════════════════════════════════
 APPROVED TOKENS & PROGRAMS
@@ -173,6 +174,7 @@ Programs: Jupiter V6, Serum DEX V3, Solana Stake Program, PumpPortal
 ═══════════════════════════════════════════════════════════
 OUTPUT FORMAT (respond ONLY with this JSON)
 ═══════════════════════════════════════════════════════════
+For a SINGLE action:
 {
   "action": "swap" | "transfer" | "hold" | "check_balance" | "swap_to_naira" | "stake" | "unstake" | "dca" | "pump_buy" | "pump_sell" | "switch_network" | "airdrop" | "set_alert",
   "reasoning": "Short, witty, human response",
@@ -181,6 +183,7 @@ OUTPUT FORMAT (respond ONLY with this JSON)
     "outputToken": "USDC",
     "amountPercent": null,
     "amountSOL": null,
+    "amountUSD": null,
     "slippageBps": 50,
     "conditionMet": null,
     "conditionDesc": null,
@@ -193,8 +196,17 @@ OUTPUT FORMAT (respond ONLY with this JSON)
   }
 }
 
+For MULTI-STEP actions (e.g. "swap half SOL to USDC and then PAJ $20"):
+{
+  "steps": [
+    { "action": "swap", "reasoning": "Step 1: swapping half your SOL to USDC", "params": { "inputToken": "SOL", "outputToken": "USDC", "amountPercent": 50 } },
+    { "action": "swap_to_naira", "reasoning": "Step 2: off-ramping $20 USDC to naira", "params": { "inputToken": "USDC", "amountUSD": 20 } }
+  ]
+}
+
 PARAM NOTES:
-- amountPercent (0-100) for "half", "all", etc. amountSOL for specific amounts.
+- amountPercent (0-100) for "half", "all", etc. amountSOL for specific SOL amounts.
+- amountUSD for dollar amounts ("$2 worth of SOL", "PAJ $20 USDC").
 - SlippageBps: default 50. mintAddress: for pump_buy/sell.
 - For dca: set numOrders and intervalDays.
 - For set_alert (price triggers): set inputToken, outputToken, amountSOL, triggerPriceUSD, condition ("above" or "below").
@@ -241,7 +253,15 @@ ACTION MAP:
 - set_alert: "if it drops to", "when it hits" → autonomous price trigger
 - pump_buy/sell: "ape in" / "sell on pump" → mintAddress + amountSOL (MAINNET ONLY)
 - switch_network: "switch to mainnet", "go devnet" → set outputToken to target network
-- airdrop: "give me SOL", "airdrop", "free SOL" → devnet only`;
+- airdrop: "give me SOL", "airdrop", "free SOL" → devnet only
+
+MULTI-STEP COMMANDS:
+- If the user asks for MULTIPLE actions in ONE message, return a "steps" array.
+- Example: "Swap half my SOL to USDC and then PAJ $20 USDC" → steps: [swap, swap_to_naira]
+- Example: "Stake 0.3 SOL and set an alert for SOL at $200" → steps: [stake, set_alert]
+- Each step in the array is a complete action object with action + reasoning + params.
+- Steps execute SEQUENTIALLY (first completes before second starts).
+- Only use steps if user explicitly asks for multiple things. Single actions = single object.`;
 }
 
 // ─── User Prompt Builder ─────────────────────────────────────────────────────
@@ -368,6 +388,117 @@ export class LLMBrain {
     throw lastError ?? new Error('LLM call failed after retries');
   }
 
+  /**
+   * Interpret an instruction and return potentially MULTIPLE commands for chaining.
+   * Returns an array of AgentCommands that should be executed sequentially.
+   */
+  async interpretMultiStep(
+    instruction: string,
+    walletState: WalletState,
+    priceData: PriceData
+  ): Promise<AgentCommand[]> {
+    const priceCondition = checkPriceCondition(instruction, priceData);
+    const userPrompt = buildUserPrompt(instruction, walletState, priceData, priceCondition);
+
+    logger.audit('LLM_REQUEST', 'Sending instruction to Groq (multi-step)', {
+      instruction,
+      priceCondition,
+      walletSOL: walletState.solBalance,
+    });
+
+    const MAX_RETRIES = 3;
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const response = await this.client.chat.completions.create({
+          model: MODEL,
+          max_tokens: MAX_TOKENS,
+          temperature: TEMPERATURE,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: buildSystemPrompt() },
+            { role: 'user', content: userPrompt },
+          ],
+        });
+
+        const rawText = response.choices[0]?.message?.content ?? '';
+
+        logger.audit('LLM_RESPONSE', 'Groq responded (multi-step)', {
+          rawText,
+          promptTokens: response.usage?.prompt_tokens,
+          completionTokens: response.usage?.completion_tokens,
+          model: response.model,
+        });
+
+        return this._parseMultiStep(rawText);
+
+      } catch (err: unknown) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        const errMsg = lastError.message;
+
+        if (errMsg.includes('429') || errMsg.includes('rate_limit') || errMsg.includes('Too Many Requests')) {
+          if (attempt < MAX_RETRIES) {
+            const waitSec = attempt * 3;
+            logger.info(`Rate limited by Groq (attempt ${attempt}/${MAX_RETRIES}). Retrying in ${waitSec}s...`);
+            await new Promise(r => setTimeout(r, waitSec * 1000));
+            continue;
+          }
+          throw new Error('Groq API rate limit exceeded. Please wait a moment and try again.');
+        }
+        throw lastError;
+      }
+    }
+
+    throw lastError ?? new Error('LLM call failed after retries');
+  }
+
+  private _parseMultiStep(rawText: string): AgentCommand[] {
+    const cleaned = rawText
+      .replace(/^```(?:json)?\s*/m, '')
+      .replace(/\s*```$/m, '')
+      .trim();
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch {
+      logger.error('LLM returned invalid JSON — defaulting to HOLD', { rawText });
+      return [safeHold('LLM returned non-JSON output — defaulting to safe HOLD.')];
+    }
+
+    // Check if it's a multi-step response
+    if (parsed && typeof parsed === 'object' && 'steps' in parsed && Array.isArray((parsed as any).steps)) {
+      const steps = (parsed as any).steps;
+      const commands: AgentCommand[] = [];
+      for (const step of steps) {
+        const result = AgentCommandSchema.safeParse(step);
+        if (result.success) {
+          commands.push(result.data);
+        } else {
+          logger.error('Multi-step command failed validation', { step, errors: result.error.errors });
+        }
+      }
+      if (commands.length === 0) {
+        return [safeHold('All multi-step commands failed validation.')];
+      }
+      logger.info(`Parsed ${commands.length} sequential commands from multi-step response`);
+      return commands;
+    }
+
+    // Single command
+    const result = AgentCommandSchema.safeParse(parsed);
+    if (!result.success) {
+      logger.error('LLM command failed schema validation — defaulting to HOLD', {
+        errors: result.error.errors,
+        parsed,
+      });
+      return [safeHold(`Schema validation failed: ${result.error.errors.map(e => e.message).join(', ')}`)];
+    }
+
+    return [result.data];
+  }
+
   private _parseAndValidate(rawText: string): AgentCommand {
     // Strip any accidental markdown fences
     const cleaned = rawText
@@ -381,6 +512,15 @@ export class LLMBrain {
     } catch {
       logger.error('LLM returned invalid JSON — defaulting to HOLD', { rawText });
       return safeHold('LLM returned non-JSON output — defaulting to safe HOLD.');
+    }
+
+    // If LLM returns multi-step even when asked for single, take the first one
+    if (parsed && typeof parsed === 'object' && 'steps' in parsed && Array.isArray((parsed as any).steps)) {
+      const firstStep = (parsed as any).steps[0];
+      if (firstStep) {
+        const result = AgentCommandSchema.safeParse(firstStep);
+        if (result.success) return result.data;
+      }
     }
 
     const result = AgentCommandSchema.safeParse(parsed);

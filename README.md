@@ -17,6 +17,7 @@ An **autonomous, AI-powered Solana wallet** that interprets natural language tra
 | 🏦 **Naira off-ramp** | Swap SOL to Naira via PAJ TX Pool |
 | 💰 **Portfolio tracking** | Real-time SOL price from CoinGecko, USD portfolio value |
 | 👥 **Multi-user** | Each Telegram user gets their own encrypted wallet and session |
+| 🤖 **Multi-Agent** | Spawn independent sub-agents (trader/analyst/sniper), each with own wallet & AI brain |
 | 🌐 **Devnet + Mainnet** | Per-user network switching |
 | 🛡️ **Guardrails** | Max 1 SOL/tx, max 1% slippage, cooldowns, simulation-before-sign |
 | 📋 **Audit trail** | Append-only JSONL log of every decision and transaction |

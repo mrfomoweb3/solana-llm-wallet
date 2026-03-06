@@ -14,9 +14,11 @@ import { UserStore } from './user-store';
 import { getSOLPrice } from './price-feed';
 import { runGuardrails, recordExecution } from './guardrails';
 import { logger } from './logger';
-import { getExplorerUrl, getAddressExplorerUrl } from './network-config';
+import { getExplorerUrl, getAddressExplorerUrl, getNetworkConfig } from './network-config';
 import { generateReceipt, ReceiptData } from './receipt';
 import { AutonomousEngine, AutonomousAlert } from './autonomous';
+import { AgentManager, AgentRole } from './agent-manager';
+import { Connection } from '@solana/web3.js';
 
 // ── Telegram Markdown escape helper ──────────────────────────────────────────
 // Escapes special chars that break Telegram's Markdown parser
@@ -102,6 +104,9 @@ export function createTelegramBot(token: string): Telegraf {
         { command: 'setpool', description: '🏦 Set PAJ TX Pool address' },
         { command: 'pool', description: '📋 View PAJ TX Pool address' },
         { command: 'alerts', description: '🤖 View active autonomous tasks' },
+        { command: 'spawn', description: '🤖 Spawn a sub-agent (trader/analyst/sniper)' },
+        { command: 'agents', description: '👥 View all active sub-agents' },
+        { command: 'kill', description: '💀 Deactivate a sub-agent' },
         { command: 'export', description: '📍 Show public key & explorer link' },
         { command: 'exportkey', description: '🔐 Export private key (secure)' },
         { command: 'help', description: '📋 List all commands' },
@@ -505,6 +510,122 @@ export function createTelegramBot(token: string): Telegraf {
         });
 
         await ctx.reply(msg, { parse_mode: 'Markdown' });
+    });
+
+    // ── Multi-Agent Manager ──────────────────────────────────────────────────
+    const agentManager = new AgentManager();
+
+    // ── /spawn <role> ────────────────────────────────────────────────────────
+
+    bot.command('spawn', async (ctx) => {
+        const chatId = ctx.chat.id;
+        const args = ctx.message.text.split(' ').slice(1);
+        const role = args[0]?.toLowerCase();
+
+        const validRoles: AgentRole[] = ['trader', 'analyst', 'sniper'];
+        if (!role || !validRoles.includes(role as AgentRole)) {
+            await ctx.reply(
+                `🤖 *Spawn a Sub-Agent*\n\n` +
+                `Usage: /spawn \`<role>\`\n\n` +
+                `Available roles:\n` +
+                `📈 \`trader\` — Aggressive, loves swaps and DCA\n` +
+                `🔍 \`analyst\` — Cautious, analyzes and advises\n` +
+                `🎯 \`sniper\` — Fast, sets price alerts and acts instantly\n\n` +
+                `Each agent gets its *own wallet* and *own AI brain*.`,
+                { parse_mode: 'Markdown' }
+            );
+            return;
+        }
+
+        const network = store.getUserNetwork(chatId);
+
+        try {
+            const agent = await agentManager.spawnAgent(chatId, role as AgentRole, network);
+
+            await ctx.reply(
+                `${agent.emoji} *${agent.name} Spawned!*\n\n` +
+                `🔑 *Wallet:* \`${agent.publicKey.substring(0, 20)}...\`\n` +
+                `🌐 *Network:* ${network}\n` +
+                `🧠 *Role:* ${agent.role}\n\n` +
+                `This agent has its *own independent wallet* and *own AI brain*.\n` +
+                `Use /agents to view all your agents.`,
+                { parse_mode: 'Markdown' }
+            );
+        } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            await ctx.reply(`❌ ${msg}`);
+        }
+    });
+
+    // ── /agents ──────────────────────────────────────────────────────────────
+
+    bot.command('agents', async (ctx) => {
+        const chatId = ctx.chat.id;
+        const agents = agentManager.getUserAgents(chatId);
+
+        if (agents.length === 0) {
+            await ctx.reply(
+                `👥 *No Sub-Agents Active*\n\n` +
+                `Spawn one with /spawn \`trader\`, /spawn \`analyst\`, or /spawn \`sniper\`.\n\n` +
+                `Each sub-agent gets its own wallet and AI brain!`,
+                { parse_mode: 'Markdown' }
+            );
+            return;
+        }
+
+        const network = store.getUserNetwork(chatId);
+        const netConfig = getNetworkConfig(network);
+        const connection = new Connection(netConfig.rpcUrl, 'confirmed');
+
+        const statuses = await agentManager.getAgentStatuses(chatId, connection);
+
+        let msg = `👥 *Your Sub-Agents (${statuses.length}/${3})*\n\n`;
+
+        for (const s of statuses) {
+            const status = s.isActive ? '🟢 Active' : '🔴 Inactive';
+            msg += `${s.emoji} *${s.name}*\n`;
+            msg += `   Status: ${status}\n`;
+            msg += `   Wallet: \`${s.publicKey.substring(0, 16)}...\`\n`;
+            msg += `   Balance: ${s.solBalance.toFixed(4)} SOL\n`;
+            if (s.lastDecision) {
+                msg += `   Last: ${s.lastDecision.action} — _${escMd(s.lastDecision.reasoning.substring(0, 50))}..._\n`;
+            }
+            msg += `\n`;
+        }
+
+        msg += `_Each agent has its own wallet and AI brain._`;
+
+        await ctx.reply(msg, { parse_mode: 'Markdown' });
+    });
+
+    // ── /kill <role> ─────────────────────────────────────────────────────────
+
+    bot.command('kill', async (ctx) => {
+        const chatId = ctx.chat.id;
+        const args = ctx.message.text.split(' ').slice(1);
+        const role = args[0]?.toLowerCase();
+
+        if (!role) {
+            await ctx.reply(
+                `💀 *Kill a Sub-Agent*\n\n` +
+                `Usage: /kill \`<role>\`\n\n` +
+                `Example: /kill \`trader\``,
+                { parse_mode: 'Markdown' }
+            );
+            return;
+        }
+
+        const killed = agentManager.killAgent(chatId, role);
+        if (killed) {
+            await ctx.reply(
+                `💀 *${killed.name} Deactivated*\n\n` +
+                `Wallet \`${killed.publicKey.substring(0, 16)}...\` has been locked.\n` +
+                `Use /spawn \`${killed.role}\` to create a new one.`,
+                { parse_mode: 'Markdown' }
+            );
+        } else {
+            await ctx.reply(`❌ No active agent with role "${role}" found.`);
+        }
     });
 
     // ── /airdrop ─────────────────────────────────────────────────────────────
@@ -950,10 +1071,10 @@ export function createTelegramBot(token: string): Telegraf {
                 network: session.network,
             });
 
-            // 2. Ask LLM to interpret
-            let cmd;
+            // 2. Ask LLM to interpret (supports multi-step commands)
+            let commands: import('./guardrails').AgentCommand[];
             try {
-                cmd = await session.llm.interpret(text, walletState, priceData);
+                commands = await session.llm.interpretMultiStep(text, walletState, priceData);
             } catch (err: any) {
                 // If it's a rate limit error, notify the user gracefully
                 if (err.message && err.message.includes('rate limit')) {
@@ -966,214 +1087,229 @@ export function createTelegramBot(token: string): Telegraf {
                 return;
             }
 
-            // 3. Handle non-transactional actions — reply directly to user's message
-            if (cmd.action === 'hold' || cmd.action === 'check_balance') {
-                let response = `💬 _${escMd(cmd.reasoning)}_`;
+            const isMultiStep = commands.length > 1;
+            if (isMultiStep) {
+                await ctx.reply(`🔗 *Multi-Step Command Detected!*\nI'll execute ${commands.length} actions sequentially for you...`, {
+                    parse_mode: 'Markdown',
+                    reply_parameters: { message_id: ctx.message.message_id },
+                });
+            }
 
-                // Only show portfolio data for check_balance (not every hold)
-                if (cmd.action === 'check_balance') {
-                    const priceSymbol = priceData.priceChange24h >= 0 ? '📈' : '📉';
-                    const priceSign = priceData.priceChange24h >= 0 ? '+' : '';
-                    const portfolioUSD = (walletState.solBalance * priceData.solPriceUSD + walletState.usdcBalance).toFixed(2);
+            // Process each command sequentially
+            for (let stepIdx = 0; stepIdx < commands.length; stepIdx++) {
+                const cmd = commands[stepIdx];
+                const stepLabel = isMultiStep ? `[Step ${stepIdx + 1}/${commands.length}] ` : '';
 
-                    response += `\n\n◎ \`${walletState.solBalance.toFixed(4)} SOL\`  💵 \`${walletState.usdcBalance.toFixed(2)} USDC\`\n` +
-                        `${priceSymbol} $${priceData.solPriceUSD.toFixed(2)} (${priceSign}${priceData.priceChange24h.toFixed(2)}%)  📊 ~$${portfolioUSD}`;
+                // 3. Handle non-transactional actions — reply directly to user's message
+                if (cmd.action === 'hold' || cmd.action === 'check_balance') {
+                    let response = `💬 _${escMd(cmd.reasoning)}_`;
+
+                    // Only show portfolio data for check_balance (not every hold)
+                    if (cmd.action === 'check_balance') {
+                        const priceSymbol = priceData.priceChange24h >= 0 ? '📈' : '📉';
+                        const priceSign = priceData.priceChange24h >= 0 ? '+' : '';
+                        const portfolioUSD = (walletState.solBalance * priceData.solPriceUSD + walletState.usdcBalance).toFixed(2);
+
+                        response += `\n\n◎ \`${walletState.solBalance.toFixed(4)} SOL\`  💵 \`${walletState.usdcBalance.toFixed(2)} USDC\`\n` +
+                            `${priceSymbol} $${priceData.solPriceUSD.toFixed(2)} (${priceSign}${priceData.priceChange24h.toFixed(2)}%)  📊 ~$${portfolioUSD}`;
+                    }
+
+                    await ctx.reply(response, {
+                        parse_mode: 'Markdown',
+                        reply_parameters: { message_id: ctx.message.message_id },
+                    });
+                    return;
+                }
+
+                // 3b. Handle switch_network — AI can change network
+                if (cmd.action === 'switch_network' as any) {
+                    const targetNet = cmd.params.outputToken?.toLowerCase().includes('main') ? 'mainnet-beta' : 'devnet';
+                    const currentNet = session.network;
+
+                    if (currentNet === targetNet) {
+                        await ctx.reply(`💬 _You're already on ${targetNet === 'devnet' ? 'devnet' : 'mainnet'} 😄_`, {
+                            parse_mode: 'Markdown',
+                            reply_parameters: { message_id: ctx.message.message_id },
+                        });
+                        return;
+                    }
+
+                    // Lock current, switch, and tell user to unlock on new network
+                    store.lockSession(chatId);
+                    store.setUserNetwork(chatId, targetNet as any);
+
+                    await ctx.reply(
+                        `🌐 *Switched to ${targetNet === 'devnet' ? 'Devnet' : 'Mainnet'}!*\n\n` +
+                        `💬 _${escMd(cmd.reasoning)}_\n\n` +
+                        `🔒 Wallet locked — use /unlock to continue on ${targetNet === 'devnet' ? 'devnet' : 'mainnet'}.`,
+                        {
+                            parse_mode: 'Markdown',
+                            reply_parameters: { message_id: ctx.message.message_id },
+                        }
+                    );
+                    return;
+                }
+
+                // 3c. Handle airdrop — AI can request devnet SOL
+                if (cmd.action === 'airdrop' as any) {
+                    if (session.network !== 'devnet') {
+                        await ctx.reply(`💬 _Airdrops only work on devnet! Switch first with \"go to devnet\" 😉_`, {
+                            parse_mode: 'Markdown',
+                            reply_parameters: { message_id: ctx.message.message_id },
+                        });
+                        return;
+                    }
+
+                    await ctx.sendChatAction('typing');
+                    try {
+                        const sig = await session.wallet.rpcConnection.requestAirdrop(
+                            session.wallet.keypair.publicKey,
+                            2 * 1e9
+                        );
+                        await ctx.reply(
+                            `💧 *Airdrop Received!*\n\n💬 _${escMd(cmd.reasoning)}_\n\n` +
+                            `+2 SOL on devnet ✅`,
+                            {
+                                parse_mode: 'Markdown',
+                                reply_parameters: { message_id: ctx.message.message_id },
+                            }
+                        );
+                    } catch {
+                        await ctx.reply(`❌ Airdrop failed — devnet might be congested, try again in a sec!`, {
+                            reply_parameters: { message_id: ctx.message.message_id },
+                        });
+                    }
+                    return;
+                }
+
+                // 4. Guardrail check
+                const guardrailResult = runGuardrails(cmd, walletState);
+
+                if (!guardrailResult.passed) {
+                    await ctx.reply(
+                        `${stepLabel}🛑 _${escMd(guardrailResult.reason ?? '')}_ — your funds are safe, nothing was sent.`,
+                        {
+                            parse_mode: 'Markdown',
+                            reply_parameters: { message_id: ctx.message.message_id },
+                        }
+                    );
+                    continue;
+                }
+
+                // 5. Check PAJ TX Pool for naira swaps
+                if (cmd.action === 'swap_to_naira') {
+                    const pajPool = store.getPajPoolAddress(chatId);
+                    if (!pajPool) {
+                        await ctx.reply(
+                            `❌ No PAJ TX Pool set — use /setpool \`<address>\` first!`,
+                            {
+                                parse_mode: 'Markdown',
+                                reply_parameters: { message_id: ctx.message.message_id },
+                            }
+                        );
+                        return;
+                    }
+                }
+
+                // 6. Handle Autonomous DCA scheduling
+                if (cmd.action === 'dca') {
+                    const numOrders = cmd.params.numOrders ?? 2;
+                    const intervalDays = cmd.params.intervalDays ?? 1;
+
+                    // Calculate amount per order
+                    const amountPerOrder = (guardrailResult.resolvedAmountSOL ?? cmd.params.amountSOL ?? 0) / numOrders;
+
+                    // Set the specific execution command
+                    const execCmd = {
+                        ...cmd,
+                        action: 'swap',
+                        params: { ...cmd.params, amountSOL: amountPerOrder, amountPercent: undefined }
+                    };
+
+                    autonomous.addAlert({
+                        chatId,
+                        type: 'dca_schedule',
+                        intervalMs: intervalDays * 24 * 60 * 60 * 1000,
+                        nextExecutionTime: Date.now(), // Execute first one immediately or wait? We wait.
+                        remainingOrders: numOrders,
+                        actionCmd: execCmd
+                    });
+
+                    await ctx.reply(
+                        `🤖 *Autonomous DCA Scheduled*\n` +
+                        `Total: ${guardrailResult.resolvedAmountSOL ?? cmd.params.amountSOL} ${cmd.params.inputToken ?? 'SOL'}\n` +
+                        `Orders: ${numOrders}\n` +
+                        `Frequency: Every ${intervalDays} day(s)\n\n` +
+                        `💬 _${escMd(cmd.reasoning)}_`,
+                        { parse_mode: 'Markdown', reply_parameters: { message_id: ctx.message.message_id } }
+                    );
+                    return;
+                }
+
+                // 7. Execute actual transactions — show typing while processing
+                await ctx.sendChatAction('typing');
+
+                const pajPoolAddress = cmd.action === 'swap_to_naira' ? store.getPajPoolAddress(chatId) : undefined;
+                const result = await session.executor.execute(cmd, guardrailResult.resolvedAmountSOL, pajPoolAddress);
+
+                if (result.success && result.signature) {
+                    recordExecution();
+                }
+
+                // 7. Format response — clean and concise
+                let response: string;
+
+                if (result.success) {
+                    response = `✅ _${escMd(cmd.reasoning)}_`;
+
+                    if (result.signature) {
+                        const explorerUrl = getExplorerUrl(result.signature, session.network);
+                        response += `\n\n🔗 [View TX](${explorerUrl})`;
+                    }
+                } else {
+                    response = `❌ ${escMd(result.error ?? 'Something went wrong')}\n\n💬 _${escMd(cmd.reasoning)}_`;
                 }
 
                 await ctx.reply(response, {
                     parse_mode: 'Markdown',
                     reply_parameters: { message_id: ctx.message.message_id },
                 });
-                return;
-            }
 
-            // 3b. Handle switch_network — AI can change network
-            if (cmd.action === 'switch_network' as any) {
-                const targetNet = cmd.params.outputToken?.toLowerCase().includes('main') ? 'mainnet-beta' : 'devnet';
-                const currentNet = session.network;
+                // 8. Send receipt image for successful transactions
+                if (result.success && result.signature) {
+                    try {
+                        const receiptData: ReceiptData = {
+                            type: cmd.action as ReceiptData['type'],
+                            fromToken: cmd.params.inputToken ?? 'SOL',
+                            toToken: cmd.params.outputToken ?? 'USDC',
+                            amount: guardrailResult.resolvedAmountSOL ?? cmd.params.amountSOL ?? 0,
+                            amountUSD: (cmd.params.inputToken?.toUpperCase() === 'USDC')
+                                ? (guardrailResult.resolvedAmountSOL ?? cmd.params.amountSOL ?? 0)
+                                : (guardrailResult.resolvedAmountSOL ?? cmd.params.amountSOL ?? 0) * priceData.solPriceUSD,
+                            signature: result.signature,
+                            network: session.network,
+                            walletAddress: walletState.publicKey,
+                            explorerUrl: getExplorerUrl(result.signature, session.network),
+                            recipient: cmd.params.recipient ?? undefined,
+                            numOrders: (cmd.params as any).numOrders ?? undefined,
+                            intervalDays: (cmd.params as any).intervalDays ?? undefined,
+                            mintAddress: (cmd.params as any).mintAddress ?? undefined,
+                        };
 
-                if (currentNet === targetNet) {
-                    await ctx.reply(`💬 _You're already on ${targetNet === 'devnet' ? 'devnet' : 'mainnet'} 😄_`, {
-                        parse_mode: 'Markdown',
-                        reply_parameters: { message_id: ctx.message.message_id },
-                    });
-                    return;
-                }
-
-                // Lock current, switch, and tell user to unlock on new network
-                store.lockSession(chatId);
-                store.setUserNetwork(chatId, targetNet as any);
-
-                await ctx.reply(
-                    `🌐 *Switched to ${targetNet === 'devnet' ? 'Devnet' : 'Mainnet'}!*\n\n` +
-                    `💬 _${escMd(cmd.reasoning)}_\n\n` +
-                    `🔒 Wallet locked — use /unlock to continue on ${targetNet === 'devnet' ? 'devnet' : 'mainnet'}.`,
-                    {
-                        parse_mode: 'Markdown',
-                        reply_parameters: { message_id: ctx.message.message_id },
+                        const receiptBuffer = await generateReceipt(receiptData);
+                        await ctx.replyWithPhoto(
+                            { source: receiptBuffer, filename: 'receipt.png' },
+                            {
+                                caption: '🧾 Transaction Receipt',
+                                reply_parameters: { message_id: ctx.message.message_id },
+                            }
+                        );
+                    } catch (receiptErr) {
+                        logger.error(`Failed to generate receipt: ${receiptErr}`);
                     }
-                );
-                return;
-            }
-
-            // 3c. Handle airdrop — AI can request devnet SOL
-            if (cmd.action === 'airdrop' as any) {
-                if (session.network !== 'devnet') {
-                    await ctx.reply(`💬 _Airdrops only work on devnet! Switch first with \"go to devnet\" 😉_`, {
-                        parse_mode: 'Markdown',
-                        reply_parameters: { message_id: ctx.message.message_id },
-                    });
-                    return;
                 }
 
-                await ctx.sendChatAction('typing');
-                try {
-                    const sig = await session.wallet.rpcConnection.requestAirdrop(
-                        session.wallet.keypair.publicKey,
-                        2 * 1e9
-                    );
-                    await ctx.reply(
-                        `💧 *Airdrop Received!*\n\n💬 _${escMd(cmd.reasoning)}_\n\n` +
-                        `+2 SOL on devnet ✅`,
-                        {
-                            parse_mode: 'Markdown',
-                            reply_parameters: { message_id: ctx.message.message_id },
-                        }
-                    );
-                } catch {
-                    await ctx.reply(`❌ Airdrop failed — devnet might be congested, try again in a sec!`, {
-                        reply_parameters: { message_id: ctx.message.message_id },
-                    });
-                }
-                return;
-            }
-
-            // 4. Guardrail check
-            const guardrailResult = runGuardrails(cmd, walletState);
-
-            if (!guardrailResult.passed) {
-                await ctx.reply(
-                    `🛑 _${escMd(guardrailResult.reason ?? '')}_ — your funds are safe, nothing was sent.`,
-                    {
-                        parse_mode: 'Markdown',
-                        reply_parameters: { message_id: ctx.message.message_id },
-                    }
-                );
-                return;
-            }
-
-            // 5. Check PAJ TX Pool for naira swaps
-            if (cmd.action === 'swap_to_naira') {
-                const pajPool = store.getPajPoolAddress(chatId);
-                if (!pajPool) {
-                    await ctx.reply(
-                        `❌ No PAJ TX Pool set — use /setpool \`<address>\` first!`,
-                        {
-                            parse_mode: 'Markdown',
-                            reply_parameters: { message_id: ctx.message.message_id },
-                        }
-                    );
-                    return;
-                }
-            }
-
-            // 6. Handle Autonomous DCA scheduling
-            if (cmd.action === 'dca') {
-                const numOrders = cmd.params.numOrders ?? 2;
-                const intervalDays = cmd.params.intervalDays ?? 1;
-
-                // Calculate amount per order
-                const amountPerOrder = (guardrailResult.resolvedAmountSOL ?? cmd.params.amountSOL ?? 0) / numOrders;
-
-                // Set the specific execution command
-                const execCmd = {
-                    ...cmd,
-                    action: 'swap',
-                    params: { ...cmd.params, amountSOL: amountPerOrder, amountPercent: undefined }
-                };
-
-                autonomous.addAlert({
-                    chatId,
-                    type: 'dca_schedule',
-                    intervalMs: intervalDays * 24 * 60 * 60 * 1000,
-                    nextExecutionTime: Date.now(), // Execute first one immediately or wait? We wait.
-                    remainingOrders: numOrders,
-                    actionCmd: execCmd
-                });
-
-                await ctx.reply(
-                    `🤖 *Autonomous DCA Scheduled*\n` +
-                    `Total: ${guardrailResult.resolvedAmountSOL ?? cmd.params.amountSOL} ${cmd.params.inputToken ?? 'SOL'}\n` +
-                    `Orders: ${numOrders}\n` +
-                    `Frequency: Every ${intervalDays} day(s)\n\n` +
-                    `💬 _${escMd(cmd.reasoning)}_`,
-                    { parse_mode: 'Markdown', reply_parameters: { message_id: ctx.message.message_id } }
-                );
-                return;
-            }
-
-            // 7. Execute actual transactions — show typing while processing
-            await ctx.sendChatAction('typing');
-
-            const pajPoolAddress = cmd.action === 'swap_to_naira' ? store.getPajPoolAddress(chatId) : undefined;
-            const result = await session.executor.execute(cmd, guardrailResult.resolvedAmountSOL, pajPoolAddress);
-
-            if (result.success && result.signature) {
-                recordExecution();
-            }
-
-            // 7. Format response — clean and concise
-            let response: string;
-
-            if (result.success) {
-                response = `✅ _${escMd(cmd.reasoning)}_`;
-
-                if (result.signature) {
-                    const explorerUrl = getExplorerUrl(result.signature, session.network);
-                    response += `\n\n🔗 [View TX](${explorerUrl})`;
-                }
-            } else {
-                response = `❌ ${escMd(result.error ?? 'Something went wrong')}\n\n💬 _${escMd(cmd.reasoning)}_`;
-            }
-
-            await ctx.reply(response, {
-                parse_mode: 'Markdown',
-                reply_parameters: { message_id: ctx.message.message_id },
-            });
-
-            // 8. Send receipt image for successful transactions
-            if (result.success && result.signature) {
-                try {
-                    const receiptData: ReceiptData = {
-                        type: cmd.action as ReceiptData['type'],
-                        fromToken: cmd.params.inputToken ?? 'SOL',
-                        toToken: cmd.params.outputToken ?? 'USDC',
-                        amount: guardrailResult.resolvedAmountSOL ?? cmd.params.amountSOL ?? 0,
-                        amountUSD: (cmd.params.inputToken?.toUpperCase() === 'USDC')
-                            ? (guardrailResult.resolvedAmountSOL ?? cmd.params.amountSOL ?? 0)
-                            : (guardrailResult.resolvedAmountSOL ?? cmd.params.amountSOL ?? 0) * priceData.solPriceUSD,
-                        signature: result.signature,
-                        network: session.network,
-                        walletAddress: walletState.publicKey,
-                        explorerUrl: getExplorerUrl(result.signature, session.network),
-                        recipient: cmd.params.recipient ?? undefined,
-                        numOrders: (cmd.params as any).numOrders ?? undefined,
-                        intervalDays: (cmd.params as any).intervalDays ?? undefined,
-                        mintAddress: (cmd.params as any).mintAddress ?? undefined,
-                    };
-
-                    const receiptBuffer = await generateReceipt(receiptData);
-                    await ctx.replyWithPhoto(
-                        { source: receiptBuffer, filename: 'receipt.png' },
-                        {
-                            caption: '🧾 Transaction Receipt',
-                            reply_parameters: { message_id: ctx.message.message_id },
-                        }
-                    );
-                } catch (receiptErr) {
-                    logger.error(`Failed to generate receipt: ${receiptErr}`);
-                }
-            }
+            } // end for(stepIdx)
 
         } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);

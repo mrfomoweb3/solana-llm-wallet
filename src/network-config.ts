@@ -27,7 +27,7 @@ export interface NetworkConfig {
 
 const DEVNET_CONFIG: NetworkConfig = {
     network: 'devnet',
-    rpcUrl: 'https://api.devnet.solana.com',
+    rpcUrl: process.env.SOLANA_DEVNET_RPC_URL || 'https://api.devnet.solana.com',
     explorerBase: 'https://explorer.solana.com',
     tokenMints: {
         SOL: 'So11111111111111111111111111111111111111112',
@@ -43,7 +43,7 @@ const DEVNET_CONFIG: NetworkConfig = {
 
 const MAINNET_CONFIG: NetworkConfig = {
     network: 'mainnet-beta',
-    rpcUrl: 'https://api.mainnet-beta.solana.com',
+    rpcUrl: process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com',
     explorerBase: 'https://explorer.solana.com',
     tokenMints: {
         SOL: 'So11111111111111111111111111111111111111112',
