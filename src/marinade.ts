@@ -2,7 +2,7 @@
  * marinade.ts
  * ─────────────────────────────────────────────────────────────────────────────
  * Solana native staking service.
- * Stake SOL by creating a stake account and delegating to a validator.
+ * Stake and unstake SOL by creating/managing stake accounts.
  *
  * Uses @solana/web3.js StakeProgram helpers for correct instruction encoding.
  * Works on both devnet and mainnet.
@@ -17,6 +17,7 @@ import {
     StakeProgram,
     Authorized,
     sendAndConfirmTransaction,
+    Transaction,
 } from '@solana/web3.js';
 import { logger } from './logger';
 import { getExplorerUrl, NetworkConfig, getNetworkConfig } from './network-config';
@@ -33,10 +34,8 @@ const MAINNET_VALIDATOR_FALLBACK = new PublicKey('7Sys29UqSSRwRe3arFKgBiKT7g5rAM
 async function getActiveValidator(connection: Connection, network: string): Promise<PublicKey> {
     try {
         const voteAccounts = await connection.getVoteAccounts('confirmed');
-        // Pick the first active validator that has been voting recently
         const active = voteAccounts.current;
         if (active.length > 0) {
-            // Sort by activated stake (highest first) and pick the top one
             active.sort((a, b) => b.activatedStake - a.activatedStake);
             const picked = active[0];
             logger.info(`Selected validator: ${picked.votePubkey} (stake: ${(picked.activatedStake / LAMPORTS_PER_SOL).toFixed(0)} SOL)`);
@@ -45,7 +44,6 @@ async function getActiveValidator(connection: Connection, network: string): Prom
     } catch (err) {
         logger.error('Failed to fetch vote accounts, using fallback', { error: err });
     }
-    // Fallback for mainnet
     if (network === 'mainnet-beta') return MAINNET_VALIDATOR_FALLBACK;
     throw new Error('No active validators found on this network.');
 }
@@ -56,6 +54,14 @@ export interface StakeResult {
     success: boolean;
     signature?: string;
     stakeAccount?: string;
+    error?: string;
+}
+
+export interface UnstakeResult {
+    success: boolean;
+    signature?: string;
+    amountUnstaked?: number;
+    accountsClosed?: number;
     error?: string;
 }
 
@@ -87,39 +93,30 @@ export class MarinadeService {
 
             logger.info(`Staking ${amountSOL} SOL via native staking on ${network}`);
 
-            // Generate a new stake account keypair
             const stakeAccount = Keypair.generate();
-
-            // Dynamically fetch a real active validator
             const validatorVote = await getActiveValidator(this.connection, network);
-
-            // Get the minimum rent-exempt balance for a stake account
             const rentExemption = await this.connection.getMinimumBalanceForRentExemption(200);
             const totalLamports = lamports + rentExemption;
 
-            // Create stake account with rent-exempt minimum + stake amount
             const createStakeAccountTx = StakeProgram.createAccount({
                 fromPubkey: this.wallet.publicKey,
                 stakePubkey: stakeAccount.publicKey,
                 authorized: new Authorized(
-                    this.wallet.publicKey, // staker
-                    this.wallet.publicKey, // withdrawer
+                    this.wallet.publicKey,
+                    this.wallet.publicKey,
                 ),
                 lamports: totalLamports,
             });
 
-            // Delegate the stake account to the validator
             const delegateTx = StakeProgram.delegate({
                 stakePubkey: stakeAccount.publicKey,
                 authorizedPubkey: this.wallet.publicKey,
                 votePubkey: validatorVote,
             });
 
-            // Combine into one transaction
             const transaction = createStakeAccountTx;
             transaction.add(...delegateTx.instructions);
 
-            // Simulate
             transaction.recentBlockhash = (await this.connection.getLatestBlockhash()).blockhash;
             transaction.feePayer = this.wallet.publicKey;
 
@@ -129,7 +126,6 @@ export class MarinadeService {
             }
             logger.info('🔬 Stake simulation passed');
 
-            // Send
             const signature = await sendAndConfirmTransaction(
                 this.connection,
                 transaction,
@@ -154,6 +150,174 @@ export class MarinadeService {
         } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
             logger.audit('ERROR', `Stake error: ${msg}`, { error: msg });
+            return { success: false, error: msg };
+        }
+    }
+
+    /**
+     * Unstake SOL — deactivate and withdraw from stake accounts.
+     *
+     * Finds all stake accounts owned by this wallet, deactivates active ones,
+     * and withdraws SOL from deactivated/inactive ones back to the wallet.
+     * Works on both devnet and mainnet.
+     */
+    async unstake(): Promise<UnstakeResult> {
+        try {
+            const network = this.networkConfig.network;
+            logger.info(`Unstaking SOL on ${network}`);
+
+            // Find all stake accounts where this wallet is the withdrawer
+            const stakeAccounts = await this.connection.getParsedProgramAccounts(
+                StakeProgram.programId,
+                {
+                    filters: [
+                        { dataSize: 200 },
+                        {
+                            memcmp: {
+                                offset: 12,
+                                bytes: this.wallet.publicKey.toBase58(),
+                            },
+                        },
+                    ],
+                }
+            );
+
+            if (stakeAccounts.length === 0) {
+                return { success: false, error: 'No stake accounts found for this wallet. Nothing to unstake.' };
+            }
+
+            logger.info(`Found ${stakeAccounts.length} stake account(s)`);
+
+            let totalUnstaked = 0;
+            let accountsClosed = 0;
+            let lastSignature = '';
+            let deactivatedCount = 0;
+
+            for (const account of stakeAccounts) {
+                const stakeAccountPubkey = account.pubkey;
+                const balance = account.account.lamports;
+                const balanceSOL = balance / LAMPORTS_PER_SOL;
+
+                const parsedData = account.account.data as any;
+                const stakeState = parsedData?.parsed?.type ?? 'unknown';
+                const stakeInfo = parsedData?.parsed?.info?.stake;
+
+                logger.info(`Stake account ${stakeAccountPubkey.toString().substring(0, 12)}... — ${balanceSOL.toFixed(4)} SOL — state: ${stakeState}`);
+
+                try {
+                    const transaction = new Transaction();
+
+                    if (stakeState === 'delegated') {
+                        const deactivationEpoch = stakeInfo?.delegation?.deactivationEpoch;
+                        const epochInfo = await this.connection.getEpochInfo();
+                        const maxEpoch = '18446744073709551615'; // u64::MAX means not deactivated
+                        const isAlreadyDeactivating = deactivationEpoch && deactivationEpoch !== maxEpoch;
+                        const isFullyDeactivated = isAlreadyDeactivating && Number(deactivationEpoch) < epochInfo.epoch;
+
+                        if (isFullyDeactivated) {
+                            // Already deactivated and cooldown passed — just withdraw
+                            transaction.add(
+                                StakeProgram.withdraw({
+                                    stakePubkey: stakeAccountPubkey,
+                                    authorizedPubkey: this.wallet.publicKey,
+                                    toPubkey: this.wallet.publicKey,
+                                    lamports: balance,
+                                }).instructions[0]
+                            );
+                            totalUnstaked += balanceSOL;
+                            accountsClosed++;
+                            logger.info(`  → Withdrawing ${balanceSOL.toFixed(4)} SOL (fully deactivated)`);
+                        } else if (!isAlreadyDeactivating) {
+                            // Active delegation — deactivate it
+                            transaction.add(
+                                StakeProgram.deactivate({
+                                    stakePubkey: stakeAccountPubkey,
+                                    authorizedPubkey: this.wallet.publicKey,
+                                }).instructions[0]
+                            );
+                            deactivatedCount++;
+                            logger.info(`  → Deactivating stake account (will be withdrawable next epoch)`);
+                        } else {
+                            // Currently deactivating, not yet withdrawable
+                            logger.info(`  → Already deactivating, waiting for epoch ${Number(deactivationEpoch) + 1}`);
+                            continue;
+                        }
+                    } else if (stakeState === 'initialized' || stakeState === 'inactive') {
+                        // Not delegated — can withdraw immediately
+                        transaction.add(
+                            StakeProgram.withdraw({
+                                stakePubkey: stakeAccountPubkey,
+                                authorizedPubkey: this.wallet.publicKey,
+                                toPubkey: this.wallet.publicKey,
+                                lamports: balance,
+                            }).instructions[0]
+                        );
+                        totalUnstaked += balanceSOL;
+                        accountsClosed++;
+                        logger.info(`  → Withdrawing ${balanceSOL.toFixed(4)} SOL (${stakeState})`);
+                    } else {
+                        logger.info(`  → Skipping account in state: ${stakeState}`);
+                        continue;
+                    }
+
+                    if (transaction.instructions.length === 0) continue;
+
+                    transaction.recentBlockhash = (await this.connection.getLatestBlockhash()).blockhash;
+                    transaction.feePayer = this.wallet.publicKey;
+
+                    const simulation = await this.connection.simulateTransaction(transaction);
+                    if (simulation.value.err) {
+                        logger.error(`Simulation failed for ${stakeAccountPubkey.toString().substring(0, 12)}: ${JSON.stringify(simulation.value.err)}`);
+                        continue;
+                    }
+
+                    const sig = await sendAndConfirmTransaction(
+                        this.connection,
+                        transaction,
+                        [this.wallet],
+                        { commitment: 'confirmed' }
+                    );
+                    lastSignature = sig;
+
+                    logger.audit('TRANSACTION_CONFIRMED', `Unstake action on ${stakeAccountPubkey.toString().substring(0, 12)}...`, {
+                        signature: sig,
+                        stakeAccount: stakeAccountPubkey.toString(),
+                        amountSOL: balanceSOL,
+                    });
+
+                } catch (err: unknown) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    logger.error(`Failed to unstake account ${stakeAccountPubkey.toString().substring(0, 12)}: ${msg}`);
+                }
+            }
+
+            // Return results
+            if (totalUnstaked > 0) {
+                return {
+                    success: true,
+                    signature: lastSignature,
+                    amountUnstaked: totalUnstaked,
+                    accountsClosed,
+                };
+            }
+
+            if (deactivatedCount > 0) {
+                return {
+                    success: true,
+                    amountUnstaked: 0,
+                    accountsClosed: 0,
+                    error: `Deactivated ${deactivatedCount} stake account(s). Your SOL will be withdrawable after the current epoch ends. Run "unstake" again after that to withdraw.`,
+                };
+            }
+
+            return {
+                success: false,
+                error: `Found ${stakeAccounts.length} stake account(s) but none could be processed right now. They may be in a cooldown period.`,
+            };
+
+        } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.audit('ERROR', `Unstake error: ${msg}`, { error: msg });
             return { success: false, error: msg };
         }
     }

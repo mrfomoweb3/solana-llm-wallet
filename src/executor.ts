@@ -84,7 +84,7 @@ export class TransactionExecutor {
       case 'stake':
         return this.executeStake(cmd, resolvedAmountSOL);
       case 'unstake':
-        return { success: false, error: 'Unstaking is not yet supported. Please unstake manually.' };
+        return this.executeUnstake(cmd);
       case 'dca':
         return this.executeDCA(cmd, resolvedAmountSOL);
       case 'pump_buy':
@@ -392,6 +392,47 @@ export class TransactionExecutor {
         this.networkConfig.network
       );
       const result = await marinade.stake(amountSOL);
+      return {
+        success: result.success,
+        signature: result.signature,
+        error: result.error,
+      };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { success: false, error: msg };
+    }
+  }
+
+  // ── Unstake via Native Staking ──────────────────────────────────────────────
+
+  private async executeUnstake(
+    cmd: AgentCommand
+  ): Promise<ExecutionResult> {
+    try {
+      const marinade = new MarinadeService(
+        this.connection,
+        this.wallet.keypair,
+        this.networkConfig.network
+      );
+      const result = await marinade.unstake();
+
+      if (result.success && result.amountUnstaked && result.amountUnstaked > 0) {
+        return {
+          success: true,
+          signature: result.signature,
+          error: undefined,
+        };
+      }
+
+      // Deactivation initiated but no withdrawal yet
+      if (result.success && result.error) {
+        return {
+          success: true,
+          signature: result.signature,
+          error: result.error,
+        };
+      }
+
       return {
         success: result.success,
         signature: result.signature,
