@@ -119,6 +119,9 @@ The AI understands all of the following instructions. Just type naturally — no
 "stake half my SOL"
 "how does staking work?"
 "what APY can I get staking SOL?"
+"unstake my SOL"
+"withdraw my staked SOL"
+"deactivate my stake"
 ```
 
 ### 📈 DCA (Dollar-Cost Averaging)
@@ -239,7 +242,7 @@ The AI understands all of the following instructions. Just type naturally — no
 swap           → Jupiter token swap
 transfer       → SOL transfer to address
 stake          → Native SOL staking (dynamic validator selection)
-unstake        → (not yet implemented)
+unstake        → Native SOL unstaking (deactivates & withdraws)
 dca            → Background DCA schedule creation
 pump_buy       → Buy Pump.fun token with SOL (mainnet only)
 pump_sell      → Sell Pump.fun token for SOL (mainnet only)
@@ -340,6 +343,7 @@ All core features work on devnet:
 | SOL airdrop | ✅ | 2 SOL per request |
 | Jupiter swaps (SOL ↔ USDC) | ✅ | Uses devnet USDC mint |
 | Native SOL staking | ✅ | Dynamic validator selection |
+| Native SOL unstaking | ✅ | Deactivates and withdraws automatically |
 | DCA scheduling | ✅ | Background swap automation |
 | Price alerts | ✅ | CoinGecko price feed |
 | PAJ naira off-ramp | ✅ | SOL transfer to pool |
@@ -357,7 +361,6 @@ All core features work on devnet:
 
 - **Max 1 SOL per transaction** — hardcoded guardrail
 - **Pump.fun is mainnet only** — no devnet support
-- **Unstaking** — not yet automated
 - **No leveraged trading** — only spot swaps and staking
 - **Rate limits** — Groq (6,000 TPM free tier), CoinGecko (30/min)
 - **JavaScript memory** — key zeroing is best-effort due to GC
